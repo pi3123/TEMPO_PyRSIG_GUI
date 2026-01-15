@@ -25,9 +25,51 @@ class ExportPage(ft.Container):
         self._build()
 
     def did_mount(self):
-        """Called when control is added to page - refresh data."""
-        self._refresh_datasets()
+        """Called when control is added to page - load data async."""
+        self.page.run_task(self._load_datasets_async)
+
+    async def _load_datasets_async(self):
+        """Load datasets without blocking UI."""
+        import asyncio
+        datasets = await asyncio.to_thread(self.db.get_all_datasets)
+        self._apply_datasets(datasets)
         self.update()
+
+    def _apply_datasets(self, datasets: list):
+        """Apply datasets to dropdown (no DB call)."""
+        try:
+            self._status_log.add_info(f"Found {len(datasets)} total datasets")
+
+            for ds in datasets:
+                self._status_log.add_info(f"  - {ds.name}: status={ds.status}")
+
+            completed = [ds for ds in datasets if ds.status == DatasetStatus.COMPLETE]
+
+            options = [
+                ft.DropdownOption(
+                    key=str(ds.id),
+                    text=f"{ds.name} ({ds.date_start} to {ds.date_end})"
+                )
+                for ds in completed
+            ]
+            self._dataset_dropdown.options = options
+            self._status_log.add_info(f"Added {len(options)} options to dropdown")
+
+            if not completed:
+                self._status_log.add_warning(
+                    "No completed datasets available. Create and download a dataset first."
+                )
+                self._export_button.disabled = True
+            else:
+                self._status_log.add_success(f"Found {len(completed)} datasets ready for export")
+                if options and completed:
+                    self._dataset_dropdown.value = options[0].key
+                    self._selected_dataset = completed[0]
+                    self._export_button.disabled = False
+                    self._status_log.add_info(f"Auto-selected first dataset: {completed[0].name}")
+                    self._update_preview()
+        except Exception as e:
+            self._status_log.add_error(f"Error refreshing datasets: {str(e)}")
 
     def _build(self):
         """Build the export page."""
@@ -252,51 +294,6 @@ class ExportPage(ft.Container):
             self._update_preview()
         self.update()
 
-    def _refresh_datasets(self):
-        """Refresh the list of available datasets."""
-        try:
-            datasets = self.db.get_all_datasets()
-            self._status_log.add_info(f"Found {len(datasets)} total datasets")
-            
-            # Show all datasets and their statuses
-            for ds in datasets:
-                self._status_log.add_info(f"  - {ds.name}: status={ds.status}")
-            
-            completed = [ds for ds in datasets if ds.status == DatasetStatus.COMPLETE]
-
-            options = [
-                ft.DropdownOption(
-                    key=str(ds.id),
-                    text=f"{ds.name} ({ds.date_start} to {ds.date_end})"
-                )
-                for ds in completed
-            ]
-            self._dataset_dropdown.options = options
-            self._status_log.add_info(f"Added {len(options)} options to dropdown")
-
-            if not completed:
-                self._status_log.add_warning(
-                    "No completed datasets available. Create and download a dataset first."
-                )
-                self._export_button.disabled = True
-            else:
-                self._status_log.add_success(f"Found {len(completed)} datasets ready for export")
-                # Auto-select first if available and enable button
-                if options and completed:
-                    self._dataset_dropdown.value = options[0].key
-                    self._selected_dataset = completed[0]  # Set the selected dataset
-                    self._export_button.disabled = False   # Enable the button
-                    self._status_log.add_info(f"Auto-selected first dataset: {completed[0].name}")
-                    self._update_preview()
-
-            if hasattr(self, 'page') and self.page:
-                self.update()
-
-        except Exception as e:
-            self._status_log.add_error(f"Error refreshing datasets: {str(e)}")
-            if hasattr(self, 'page') and self.page:
-                self.update()
-
     def _update_preview(self):
         """Update data preview tab with selected dataset info."""
         if not self._selected_dataset or not self._selected_dataset.file_path:
@@ -390,7 +387,7 @@ class ExportPage(ft.Container):
     def _on_refresh(self, e):
         """Handle refresh button click."""
         self._status_log.add_info("Refreshing dataset list...")
-        self._refresh_datasets()
+        self.page.run_task(self._load_datasets_async)
 
     def _on_export(self, e):
         """Handle export button click."""

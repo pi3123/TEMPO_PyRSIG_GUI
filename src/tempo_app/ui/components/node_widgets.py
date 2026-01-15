@@ -55,7 +55,6 @@ class NodeCard(ft.Container):
             border_radius=8,
             border=ft.border.all(1, self.CATEGORY_COLORS.get(category, Colors.BORDER)),
             padding=12,
-            animate=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
         )
     
     def _build_content(self):

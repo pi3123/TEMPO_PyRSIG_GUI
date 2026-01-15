@@ -35,12 +35,27 @@ class InspectPage(ft.Container):
         self._build()
     
     def did_mount(self):
-        """Called when control is added to page - refresh data."""
-        self._load_datasets()
-        # Load stats for the initially selected dataset
-        if self.selected_dataset and self.page:
-            self.page.run_task(self._load_data_stats)
+        """Called when control is added to page - load data async."""
+        self.page.run_task(self._load_initial_data_async)
+
+    async def _load_initial_data_async(self):
+        """Load initial page data without blocking UI."""
+        datasets = await asyncio.to_thread(self.db.get_all_datasets)
+        self._apply_datasets(datasets)
+        # Load stats for initially selected dataset
+        if self.selected_dataset:
+            await self._load_data_stats()
         self.update()
+
+    def _apply_datasets(self, datasets: list):
+        """Apply datasets to dropdown (no DB call)."""
+        self._dataset_dropdown.options = [
+            ft.DropdownOption(dataset.id, dataset.name) for dataset in datasets
+        ]
+        if datasets:
+            self._dataset_dropdown.value = datasets[0].id
+            self.selected_dataset = datasets[0]
+            self._update_info_display()
     
     def _build(self):
         """Build the inspect page."""
@@ -111,39 +126,31 @@ class InspectPage(ft.Container):
         
         self.expand = True
         self.padding = Spacing.PAGE_HORIZONTAL
-        
-        # Load initial data
-        self._load_datasets()
-    
-    def _load_datasets(self):
-        """Load datasets into dropdown."""
-        datasets = self.db.get_all_datasets()
-        self._dataset_dropdown.options = [
-            ft.DropdownOption(dataset.id, dataset.name) for dataset in datasets
-        ]
-        if datasets:
-            self._dataset_dropdown.value = datasets[0].id
-            self.selected_dataset = datasets[0]
-            self._update_info_display()
-            # Don't load stats here - page may not be set yet
-            # Stats will load when user changes selection or refreshes
-    
+
     def _on_refresh(self, e):
         """Refresh the dataset list."""
-        self._load_datasets()
-        if self.selected_dataset and self.page:
-            self.page.run_task(self._load_data_stats)
+        self.page.run_task(self._refresh_async)
+
+    async def _refresh_async(self):
+        """Async refresh handler."""
+        datasets = await asyncio.to_thread(self.db.get_all_datasets)
+        self._apply_datasets(datasets)
+        if self.selected_dataset:
+            await self._load_data_stats()
         self.update()
-    
+
     def _on_dataset_change(self, e):
         """Handle dataset selection change."""
         dataset_id = e.control.value
         if dataset_id:
-            self.selected_dataset = self.db.get_dataset(dataset_id)
-            self._update_info_display()
-            if self.page:
-                self.page.run_task(self._load_data_stats)
-            self.update()
+            self.page.run_task(self._change_dataset_async, dataset_id)
+
+    async def _change_dataset_async(self, dataset_id: str):
+        """Async dataset change handler."""
+        self.selected_dataset = await asyncio.to_thread(self.db.get_dataset, dataset_id)
+        self._update_info_display()
+        await self._load_data_stats()
+        self.update()
     
     def _update_info_display(self):
         """Update the dataset info display."""

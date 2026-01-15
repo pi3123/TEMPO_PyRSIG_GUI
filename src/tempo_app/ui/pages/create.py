@@ -215,7 +215,25 @@ class CreatePage(ft.Container):
             self.page.overlay.append(self._start_picker)
         if hasattr(self, "_end_picker") and self._end_picker not in self.page.overlay:
             self.page.overlay.append(self._end_picker)
-        self.page.update()
+        # Load datasets async
+        self.page.run_task(self._load_datasets_async)
+
+    async def _load_datasets_async(self):
+        """Load datasets without blocking UI."""
+        import asyncio
+        datasets = await asyncio.to_thread(self.db.get_all_datasets)
+        self._apply_datasets(datasets)
+        self.update()
+
+    def _apply_datasets(self, datasets: list):
+        """Apply datasets to selector (no DB call)."""
+        options = []
+        for ds in datasets:
+            label = f"{ds.name} ({ds.date_start} to {ds.date_end})"
+            options.append(ft.DropdownOption(key=ds.id, text=label))
+        self._dataset_selector.options = options
+        if options:
+            self._dataset_selector.value = options[0].key
     
     def _build(self):
         """Build the page layout."""
@@ -240,7 +258,6 @@ class CreatePage(ft.Container):
             text_style=ft.TextStyle(color=Colors.ON_SURFACE),
             width=300,
         )
-        self._refresh_dataset_options()
         
         self._load_btn = ft.FilledTonalButton(
             content=ft.Row([
@@ -733,7 +750,7 @@ class CreatePage(ft.Container):
             self._name_field.read_only = True
             self._name_field.hint_text = "Select a dataset to load"
             # Refresh dataset options in case new ones were created
-            self._refresh_dataset_options()
+            self.page.run_task(self._load_datasets_async)
         else:
             self._name_field.read_only = False
             self._name_field.hint_text = "e.g., July_Weekdays_SoCal"
@@ -741,19 +758,6 @@ class CreatePage(ft.Container):
             self._extend_dataset_id = None
         
         self.update()
-    
-    def _refresh_dataset_options(self):
-        """Refresh the dataset selector options from database."""
-        datasets = self.db.get_all_datasets()
-        options = []
-        for ds in datasets:
-            # Show name and date range
-            label = f"{ds.name} ({ds.date_start} to {ds.date_end})"
-            options.append(ft.DropdownOption(key=ds.id, text=label))
-        
-        self._dataset_selector.options = options
-        if options:
-            self._dataset_selector.value = options[0].key
     
     def _on_load_dataset_click(self, e):
         """Load selected dataset configuration into the form."""

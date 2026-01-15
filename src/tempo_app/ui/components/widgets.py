@@ -132,7 +132,6 @@ class SectionCard(ft.Container):
         self._content_wrapper = ft.Container(
             content=content,
             visible=not collapsed,
-            animate_opacity=200,
             padding=ft.padding.only(top=12),
         )
         
@@ -612,7 +611,6 @@ class MultiSelectChipGroup(ft.Container):
                 border_radius=16,
                 on_click=lambda e, o=opt: self._toggle(o),
                 data=opt,
-                animate=ft.Animation(200, "easeOut"),
             )
             self._chips.append(chip)
             

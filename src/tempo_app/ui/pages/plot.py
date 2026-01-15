@@ -31,19 +31,15 @@ class PlotPage(ft.Container):
         self._is_animating = False
         
         self._build()
-    
-    def _build(self):
-        """Build the page layout."""
-    async def did_mount_async(self):
-        """Called when the control is added to the page - refresh data."""
-        # Always refresh datasets when page is shown
-        self._refresh_datasets()
-        
-        self._hour_slider.on_change = self._on_hour_change
-        self._dataset_dropdown.on_change = self._on_dataset_change
-        self._variable_dropdown.on_change = lambda e: self.update()
-        self._dataset_dropdown.on_change = self._on_dataset_change
-        self._hour_slider.on_change = self._on_hour_change
+
+    def did_mount(self):
+        """Called when control is added to page - load data async."""
+        self.page.run_task(self._load_datasets_async)
+
+    async def _load_datasets_async(self):
+        """Load datasets without blocking UI."""
+        datasets = await asyncio.to_thread(self.db.get_all_datasets)
+        self._apply_datasets(datasets)
         self.update()
 
     def _build(self):
@@ -58,7 +54,6 @@ class PlotPage(ft.Container):
             text_style=ft.TextStyle(color=Colors.ON_SURFACE),
         )
         self._dataset_dropdown.on_change = self._on_dataset_change
-        self._refresh_datasets()
         
         # Variable selector
         self._variable_dropdown = ft.Dropdown(
@@ -229,7 +224,6 @@ class PlotPage(ft.Container):
             border_radius=8,
             bgcolor=Colors.SURFACE_VARIANT,
             visible=True,
-            animate=ft.Animation(300, ft.AnimationCurve.EASE_OUT),
         )
         # Store ref to progress bar for easy access
         self._progress_bar = self._status_container.content.controls[1]
@@ -339,16 +333,15 @@ class PlotPage(ft.Container):
             
         self.update()
     
-    def _refresh_datasets(self):
-        """Refresh dataset dropdown options."""
-        datasets = self.db.get_all_datasets()
+    def _apply_datasets(self, datasets: list):
+        """Apply datasets to dropdown (no DB call)."""
         options = []
         for ds in datasets:
             options.append(ft.DropdownOption(key=ds.id, text=ds.name))
         self._dataset_dropdown.options = options
         if options:
             self._dataset_dropdown.value = options[0].key
-    
+
     def _on_dataset_change(self, e):
         """Handle dataset selection change."""
         self._current_dataset = None

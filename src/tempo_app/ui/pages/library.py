@@ -1,6 +1,7 @@
 """Data Library page - View and manage downloaded datasets."""
 
 import flet as ft
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -19,8 +20,15 @@ class LibraryPage(ft.Container):
         self._build()
     
     def did_mount(self):
-        """Called when control is added to page - refresh data."""
-        self._refresh_data()
+        """Called when control is added to page - load data async."""
+        self.page.run_task(self._load_data_async)
+
+    async def _load_data_async(self):
+        """Load all page data without blocking UI."""
+        stats = await asyncio.to_thread(self.db.get_storage_stats)
+        datasets = await asyncio.to_thread(self.db.get_all_datasets)
+        self._apply_storage_stats(stats)
+        self._apply_datasets(datasets)
         self.update()
     
     def _build(self):
@@ -58,9 +66,7 @@ class LibraryPage(ft.Container):
         # Log panel
         self._status_log = StatusLogPanel(max_entries=50)
         self._status_log.height = 150
-        
-        self._refresh_data()
-        
+
         datasets_card = SectionCard(
             title="Datasets",
             icon=ft.Icons.DATASET,
@@ -89,48 +95,34 @@ class LibraryPage(ft.Container):
         self.expand = True
         self.padding = Spacing.PAGE_HORIZONTAL
     
-    def _refresh_data(self):
-        """Refresh all data on the page."""
-        self._refresh_datasets()
-        self._update_storage_stats()
-    
-    def _update_storage_stats(self):
-        """Update storage statistics display."""
+    def _apply_storage_stats(self, stats: dict):
+        """Apply storage stats to UI (no DB call)."""
         try:
-            stats = self.db.get_storage_stats()
             total_mb = stats.get("total_size_mb", 0)
             dataset_count = stats.get("dataset_count", 0)
-            
+
             self._storage_used_text.value = f"{total_mb:.1f} MB"
-            
-            # Assume 10GB max for progress bar visual
+
             max_storage_mb = 10 * 1024
             self._storage_progress.value = min(1.0, total_mb / max_storage_mb)
-            
+
             if dataset_count == 0:
                 self._storage_info_text.value = "No datasets yet. Create one from the Create tab."
             else:
                 self._storage_info_text.value = f"{dataset_count} dataset{'s' if dataset_count != 1 else ''}"
         except Exception as e:
             self._storage_info_text.value = f"Error loading storage stats: {e}"
-    
-    def _refresh_datasets(self):
-        """Load datasets from database."""
+
+    def _apply_datasets(self, datasets: list):
+        """Apply datasets list to UI (no DB call)."""
         self._dataset_list.controls.clear()
-        
-        try:
-            datasets = self.db.get_all_datasets()
-            if not datasets:
-                self._dataset_list.controls.append(
-                    ft.Text("No datasets found.", color=Colors.ON_SURFACE_VARIANT, italic=True)
-                )
-            else:
-                for ds in datasets:
-                    self._dataset_list.controls.append(self._create_dataset_card(ds))
-        except Exception as e:
+        if not datasets:
             self._dataset_list.controls.append(
-                ft.Text(f"Error loading datasets: {e}", color=Colors.ERROR)
+                ft.Text("No datasets found.", color=Colors.ON_SURFACE_VARIANT, italic=True)
             )
+        else:
+            for ds in datasets:
+                self._dataset_list.controls.append(self._create_dataset_card(ds))
     
     def _create_dataset_card(self, ds: Dataset) -> ft.Control:
         """Create a card for a dataset."""
@@ -161,7 +153,15 @@ class LibraryPage(ft.Container):
     
     def _on_refresh(self, e):
         """Refresh the dataset list."""
-        self._refresh_data()
+        self._status_log.add_info("Refreshing...")
+        self.page.run_task(self._refresh_async)
+
+    async def _refresh_async(self):
+        """Async refresh handler."""
+        stats = await asyncio.to_thread(self.db.get_storage_stats)
+        datasets = await asyncio.to_thread(self.db.get_all_datasets)
+        self._apply_storage_stats(stats)
+        self._apply_datasets(datasets)
         self._status_log.add_info("Refreshed dataset list")
         self.update()
     
@@ -172,9 +172,13 @@ class LibraryPage(ft.Container):
     async def _on_delete_async(self, dataset: Dataset):
         """Delete a dataset asynchronously."""
         try:
-            self.db.delete_dataset(dataset.id)
+            await asyncio.to_thread(self.db.delete_dataset, dataset.id)
             self._status_log.add_success(f"Deleted dataset '{dataset.name}'")
-            self._refresh_data()
+            # Refresh data after delete
+            stats = await asyncio.to_thread(self.db.get_storage_stats)
+            datasets = await asyncio.to_thread(self.db.get_all_datasets)
+            self._apply_storage_stats(stats)
+            self._apply_datasets(datasets)
             self.update()
         except Exception as e:
             self._status_log.add_error(f"Error deleting dataset: {e}")
