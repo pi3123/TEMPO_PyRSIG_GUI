@@ -28,7 +28,6 @@ class PlotPage(ft.Container):
         
         self._current_dataset = None
         self._current_hour = 12
-        self._is_animating = False
         
         self._build()
 
@@ -103,22 +102,6 @@ class PlotPage(ft.Container):
             size=16,
             weight=ft.FontWeight.W_500,
             color=Colors.ON_SURFACE,
-        )
-        
-        # Animation controls
-        self._play_btn = ft.IconButton(
-            icon=ft.Icons.PLAY_ARROW,
-            icon_color=Colors.PRIMARY,
-            tooltip="Animate hours",
-            on_click=self._on_play_click,
-        )
-        
-        self._stop_btn = ft.IconButton(
-            icon=ft.Icons.STOP,
-            icon_color=Colors.ERROR,
-            tooltip="Stop animation",
-            on_click=self._on_stop_click,
-            visible=False,
         )
         
         # Generate button
@@ -241,8 +224,6 @@ class PlotPage(ft.Container):
             ft.Text("Hour:", color=Colors.ON_SURFACE),
             self._hour_slider,
             self._hour_text,
-            self._play_btn,
-            self._stop_btn,
         ], spacing=12, vertical_alignment=ft.CrossAxisAlignment.CENTER)
         
         left_col = ft.Column([
@@ -454,6 +435,8 @@ class PlotPage(ft.Container):
                 self._map_image.src = result
                 self._map_image.visible = True
                 self._placeholder.visible = False
+                self._map_image.update()
+                self._placeholder.update()
                 self._show_message(f"✅ Generated {variable} map for {hour:02d}:00 UTC", is_success=True)
             else:
                 hours_str = ", ".join(f"{h:02d}:00" for h in available_hours) if available_hours else "None found"
@@ -495,96 +478,3 @@ class PlotPage(ft.Container):
         self.page.dialog = dlg
         dlg.open = True
         self.page.update()
-
-    def _on_play_click(self, e):
-        """Start animation."""
-        self._is_animating = True
-        self._play_btn.visible = False
-        self._stop_btn.visible = True
-        self.update()
-        self.page.run_task(self._animate)
-    
-    def _on_stop_click(self, e):
-        """Stop animation."""
-        self._is_animating = False
-        self._play_btn.visible = True
-        self._stop_btn.visible = False
-        self.update()
-    
-    async def _animate(self):
-        """Animate through hours."""
-        import xarray as xr
-        
-        dataset_id = self._dataset_dropdown.value
-        if not dataset_id:
-            return
-        
-        dataset = self.db.get_dataset(dataset_id)
-        if not dataset:
-            return
-        
-        # Find processed file - use file_path from database if available
-        if dataset.file_path and Path(dataset.file_path).exists():
-            processed_path = Path(dataset.file_path)
-        else:
-            safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in dataset.name)
-            processed_path = self.data_dir / "datasets" / safe_name / f"{safe_name}_processed.nc"
-
-        if not processed_path.exists():
-            return
-
-        try:
-            ds = xr.open_dataset(processed_path)
-
-            # Get available hours
-            if 'HOUR' in ds.dims:
-                hours = sorted(ds.HOUR.values)
-            elif 'hour' in ds.dims:
-                hours = sorted(ds.hour.values)
-            else:
-                hours = list(range(12, 22))  # Default daylight hours
-            
-            variable = self._variable_dropdown.value
-            road_detail = self._road_dropdown.value
-            bbox = [dataset.bbox.west, dataset.bbox.south, dataset.bbox.east, dataset.bbox.north]
-            
-            for hour in hours:
-                if not self._is_animating:
-                    break
-                
-                self._hour_slider.value = int(hour)
-                self._hour_text.value = f"{int(hour):02d}:00 UTC"
-                self._current_hour = int(hour)
-                self._show_message(f"🎬 Animating: {int(hour):02d}:00 UTC")
-                
-                result = await asyncio.to_thread(
-                    self.plotter.generate_map,
-                    ds,
-                    int(hour),
-                    variable,
-                    dataset.name,
-                    bbox=bbox,
-                    road_detail=road_detail,
-                )
-                
-                if result:
-                    self._map_image.src = result
-                    self._map_image.visible = True
-                    self._placeholder.visible = False
-                    self.update()
-                
-                await asyncio.sleep(1.0)  # 1 second per frame
-            
-            ds.close()
-            
-        except Exception as e:
-            self._show_message(f"❌ Animation error: {e}", is_error=True)
-        
-        self._is_animating = False
-        self._play_btn.visible = True
-        self._stop_btn.visible = False
-        
-        if not self._status_text.value.startswith("❌"):
-             self._show_message("✅ Animation complete", is_success=True)
-        else:
-             self.update()

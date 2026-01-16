@@ -27,12 +27,11 @@ from .constants import DEFAULT_BBOX, SITES
 logger = logging.getLogger(__name__)
 
 class MapPlotter:
-    """Generates maps and visualizations for TEMPO data."""
-    
     def __init__(self, cache_dir: Path):
         self.cache_dir = cache_dir / "plots"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.geometry_cache = {}
+        self._temp_file_counter = 0
         
     def generate_map(self, 
                     dataset: xr.Dataset, 
@@ -56,7 +55,7 @@ class MapPlotter:
             dataset: xarray Dataset with 'NO2_TropVCD', 'HCHO_TotVCD', or 'FNR'
             hour: UTC hour
             variable: 'NO2', 'HCHO', or 'FNR'
-            dataset_name: Name of dataset (for file naming)
+            dataset_name: Name of dataset (for display)
             bbox: [west, south, east, north]
             road_detail: 'primary', 'major', or 'all'
             sites: Dict mapping site code to (lat, lon). If None, uses default SITES.
@@ -70,24 +69,17 @@ class MapPlotter:
             vmax: Maximum value for color scale
             
         Returns:
-            Path to the generated PNG file
+            Path to the temporary PNG file (always regenerated fresh)
         """
-        # Include style info in filename
-        style_hash = f"{font_size}_{colormap}_{border_width}_{road_scale}_{vmin}_{vmax}"
-        sites_hash = 'default' if sites is None else ('none' if not sites else f'{len(sites)}sites')
-        filename = f"{dataset_name}_{variable}_H{hour:02d}_{road_detail}_{sites_hash}_{style_hash}.png"
-        filepath = self.cache_dir / filename
-        
-        if filepath.exists():
-            return str(filepath)
-            
+        import tempfile
+        import time
+
         try:
             print(f"DEBUG: Generating map for {variable} @ H{hour}")
             if 'cartopy.crs' not in sys.modules:
                 print("DEBUG: Cartopy not loaded, using fallback.")
-                return self._generate_dummy_map(variable, hour, filepath)
+                return self._generate_dummy_map(variable, hour)
 
-            # Extract data for the specific hour
             # Extract data for the specific hour
             # Handle processed data (with 'hour' or 'HOUR' dim) and raw data (with 'TSTEP')
             if 'HOUR' in dataset.dims:
@@ -207,10 +199,17 @@ class MapPlotter:
             ax.gridlines(draw_labels=True, linewidth=1, color='gray', alpha=0.3, linestyle='--')
             ax.set_title(f"{variable} - {dataset_name}\n{hour:02d}:00 UTC", fontsize=title_size)
             
-            plt.savefig(filepath, dpi=100, bbox_inches='tight')
+            # Save to temp file with descriptive name + unique timestamp
+            import time
+            safe_dataset_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in dataset_name)
+            timestamp = int(time.time() * 1000)
+            temp_filename = f"{safe_dataset_name}_{variable}_H{hour:02d}_{road_detail}_{timestamp}.png"
+            temp_path = self.cache_dir / temp_filename
+            plt.savefig(temp_path, dpi=100, bbox_inches='tight')
             plt.close(fig)
             
-            return str(filepath)
+            print(f"DEBUG: Map saved to {temp_path}")
+            return str(temp_path)
             
         except Exception as e:
             logger.error(f"Plotting failed: {e}")
@@ -220,15 +219,21 @@ class MapPlotter:
             plt.close('all')
             return None
 
-    def _generate_dummy_map(self, variable, hour, filepath):
+    def _generate_dummy_map(self, variable, hour):
         """Generate a placeholder image if Cartopy is missing."""
+        import time
         fig, ax = plt.subplots(figsize=(5, 4))
         ax.text(0.5, 0.5, f"{variable} Map\nHour {hour}\n(Cartopy Missing)", 
               ha='center', va='center')
         ax.axis('off')
-        plt.savefig(filepath)
+        
+        self._temp_file_counter += 1
+        temp_filename = f"dummy_{int(time.time() * 1000)}_{self._temp_file_counter}.png"
+        temp_path = self.cache_dir / temp_filename
+        plt.savefig(temp_path)
         plt.close(fig)
-        return str(filepath)
+        
+        return str(temp_path)
 
     def _add_road_overlay(self, ax, bbox: list[float], road_detail: str = 'primary', road_scale: float = 1.0):
         """
