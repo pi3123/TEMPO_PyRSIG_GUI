@@ -1,61 +1,121 @@
 # TEMPO Analyzer
 
-A modern desktop application for analyzing NASA TEMPO satellite data (NO₂ and HCHO) with smart storage and beautiful visualizations.
+**TEMPO Analyzer** is a powerful desktop application designed to streamline the retrieval, analysis, and visualization of satellite air quality data from NASA's [TEMPO (Tropospheric Emissions: Monitoring of Pollution)](https://tempo.si.edu/) mission. 
 
-![TEMPO Analyzer](docs/screenshot.png)
+It provides an intuitive interface for researchers and data scientists to download NO₂, HCHO, and FNR (Formaldehyde-to-NO₂ Ratio) data, visualize it on interactive maps, extract site-specific time series, and export processed data for further analysis.
 
-## Features
+![TEMPO Analyzer Screenshot](docs/screenshot.png)
 
-- 📊 **Dataset Creator** - Download and configure TEMPO data with custom regions, dates, and quality filters
-- 🗺️ **Interactive Maps** - Visualize NO₂, HCHO, and FNR (Formaldehyde-to-NO₂ Ratio) on geographic maps
-- 🔍 **Data Inspector** - Browse individual granules and see exactly what was downloaded
-- 📁 **Smart Storage** - Automatic deduplication and resume support for interrupted downloads
-- 📤 **Excel Export** - Multiple export formats for data analysis
-- 🎨 **Modern UI** - Beautiful Material Design 3 interface built with Flet
+## Key Features
+
+*   **centralized Library**: Manage all your downloaded datasets in one place. Easily search, filter, and access your data.
+*   **Smart Dataset Creation**: 
+    *   Define custom geographic regions of interest.
+    *   Choose specific date ranges.
+    *   Select data products (NO₂, HCHO) with automatic quality filtering.
+*   **Batch Processing**: Efficiently bulk-import data for multiple date ranges or disjoint time periods using CSV configuration files.
+*   **Unified Workspace**:
+    *   **Interactive Maps**: High-resolution visualization of pollutant concentrations on improved base maps.
+    *   **Site Analysis**: precise extraction of data at specific coordinates (e.g., monitoring stations).
+    *   **Granule Inspection**: detailed view of individual data files.
+*   **Flexible Export**: Export processed data to Excel or CSV formats, including daily averages and site-specific time series.
+*   **Robust Architecture**: 
+    *   Built with modern Python and **Flet** (Flutter for Python).
+    *   Includes automatic job recovery and smart caching to handle large satellite datasets reliably.
+    *   Supports parallel downloading for faster data retrieval.
 
 ## Installation
 
-### Option 1: Standalone Executable (Recommended)
+### Prerequisites
 
-Download the latest release from the [Releases](https://github.com/your-repo/tempo-analyzer/releases) page.
+*   **Python 3.10** or higher.
+*   **Git** (for cloning the repository).
+*   Internet connection (for downloading satellite data).
 
-### Option 2: From Source
+### Setup
+
+1.  **Clone the repository:**
+    ```bash
+    git clone https://github.com/your-username/tempo-analyzer.git
+    cd tempo-analyzer
+    ```
+
+2.  **Create a virtual environment (Recommended):**
+    ```bash
+    # Windows
+    python -m venv venv
+    venv\Scripts\activate
+
+    # macOS/Linux
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
+
+3.  **Install dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+## Usage
+
+### Running the Application
+
+To start the application, run the main module from the root directory:
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-repo/tempo-analyzer.git
-cd tempo-analyzer
-
-# Create virtual environment
-python -m venv venv
-venv\Scripts\activate  # Windows
-# source venv/bin/activate  # Linux/Mac
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the application
 python -m tempo_app.main
 ```
 
-## Quick Start
+### Workflow
 
-1. **Create a Dataset**: Select a region (e.g., "Southern California"), date range, and quality filters
-2. **Download**: Click "Download & Create Dataset" - the app will fetch data from NASA RSIG
-3. **Visualize**: Use the Compare tab to generate side-by-side maps
-4. **Export**: Export data to Excel for further analysis
+1.  **Create a Dataset**:
+    *   Navigate to the **+ New Dataset** page.
+    *   Select your region (e.g., "Los Angeles Basin").
+    *   Choose the Product (NO₂ or HCHO).
+    *   Select your Start and End dates.
+    *   Click **Download** to begin fetching data from NASA RSIG.
 
-## System Requirements
+2.  **Batch Import**:
+    *   For complex queries involving multiple date ranges, use the **Batch Import** page.
+    *   Load a CSV file specifying your desired date ranges and regions.
+    *   The system will queue and process these jobs sequentially or in parallel.
 
-- Windows 10/11, macOS 10.15+, or Linux
-- 4 GB RAM minimum (8 GB recommended)
-- 2 GB free disk space for application and cache
+3.  **Analyze in Workspace**:
+    *   From the **Library**, click on a dataset to open its **Workspace**.
+    *   **Map Tab**: View the spatial distribution of pollutants. Use the timeline slider to animate changes over time.
+    *   **Styles**: Toggle between different map styles (Light, Dark, Satellite) and adjust data overlays.
+    *   **Sites**: Add specific monitoring locations to see data values at those exact points.
 
-## Data Sources
+4.  **Export Data**:
+    *   Go to the **Export** tab within the Workspace.
+    *   Choose your export format (e.g., Daily Averages, Raw Granules).
+    *   Processed files will be saved to your configured output directory.
 
-- **TEMPO Satellite Data**: Downloaded via [NASA RSIG API](https://www.epa.gov/rsig)
-- **Road Networks**: US Census Bureau TIGER/Line shapefiles (auto-downloaded)
+## Configuration
+
+Access the **Settings** page to configure:
+
+*   **Data Directory**: Where large satellite files will be stored.
+*   **UI Scale**: Adjust text size for better readability on high-DPI screens.
+*   **Download Workers**: Number of parallel connections for faster downloads (default: 8).
+
+## Development
+
+### Project Structure
+
+*   `src/tempo_app/`: Main application source code.
+    *   `core/`: Backend logic (Downloader, Processor, Scheduler).
+    *   `ui/`: Flet-based UI components and pages.
+    *   `storage/`: Database and file system management.
+*   `tests/`: Unit and integration tests.
+
+### Contributing
+
+Contributions are welcome! Please ensure you:
+1.  Fork the repository.
+2.  Create a feature branch.
+3.  Submit a Pull Request with a clear description of your changes.
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+This project is licensed under the MIT License. See `LICENSE` for details.
