@@ -10,6 +10,7 @@ class ConfigManager:
         "font_scale": 1.0,
         "theme_mode": "light", # Reserved for future
         "download_workers": 8,  # Number of parallel download workers
+        "rsig_api_key": "",  # NASA RSIG API key (optional but recommended)
     }
     
     def __init__(self, app_name: str = "tempo_analyzer"):
@@ -60,3 +61,8 @@ class ConfigManager:
     @property
     def download_workers(self) -> int:
         return self._config.get("download_workers", 4)
+
+    @property
+    def rsig_api_key(self) -> str:
+        """Get the configured RSIG API key."""
+        return self._config.get("rsig_api_key", "")

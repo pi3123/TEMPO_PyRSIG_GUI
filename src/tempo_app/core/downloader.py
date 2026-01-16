@@ -9,8 +9,6 @@ from datetime import datetime
 import json
 import logging
 import time
-import random
-import string
 import gc
 import traceback
 
@@ -53,21 +51,17 @@ def format_duration(seconds: float) -> str:
         return f"{h}h {m}m" if m else f"{h}h"
 
 
-def generate_random_api_key() -> str:
-    """Generate a random API key string for anonymous access."""
-    # Generate a random 16-char alphanumeric string
-    chars = string.ascii_lowercase + string.digits
-    random_part = ''.join(random.choices(chars, k=16))
-    return f"anon_{random_part}"
+
 
 
 class RSIGDownloader:
     """Handles downloading TEMPO data from EPA RSIG API with parallel execution."""
     
-    def __init__(self, workdir: Path, max_concurrent: int = MAX_CONCURRENT_DOWNLOADS):
+    def __init__(self, workdir: Path, max_concurrent: int = MAX_CONCURRENT_DOWNLOADS, api_key: str = ""):
         self.workdir = workdir
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.max_concurrent = max_concurrent
+        self.api_key = api_key  # Configured API key (empty = anonymous)
         
         # Shared state for progress tracking
         self._completed = 0
@@ -164,15 +158,15 @@ class RSIGDownloader:
         dataset_dir: Path,
         status: StatusManager
     ) -> Path | None:
-        """Download a single granule with random API key."""
+        """Download a single granule."""
         
-        # Generate unique API key for this worker
-        api_key = generate_random_api_key()
+        # Use configured API key if available, otherwise use "anonymous"
+        api_key = self.api_key if self.api_key else "anonymous"
         
         filename = f"tempo_{d_str}_{hour:02d}.nc"
         filepath = dataset_dir / filename
         
-        logger.info(f"[WORKER] Starting: {d_str} {hour:02d}:00 (key={api_key[:12]}...)")
+        logger.info(f"[WORKER] Starting: {d_str} {hour:02d}:00 (key={api_key})")
         
         if status:
             async with self._lock:
@@ -184,16 +178,16 @@ class RSIGDownloader:
             import tempfile
             import shutil
             
-            temp_dir = tempfile.mkdtemp(prefix=f"rsig_{api_key[:8]}_")
+            temp_dir = tempfile.mkdtemp(prefix="rsig_")
             
             try:
-                # Setup API with unique random key
+                # Setup API with configured or anonymous key
                 api = RsigApi(bbox=bbox, workdir=temp_dir, grid_kw='1US1', gridfit=True)
                 api.tempo_kw.update({
                     'minimum_quality': 'normal',
                     'maximum_cloud_fraction': max_cloud,
                     'maximum_solar_zenith_angle': max_sza,
-                    'api_key': api_key  # Random key for this worker
+                    'api_key': api_key
                 })
                 
                 d_obj = pd.to_datetime(d_str)

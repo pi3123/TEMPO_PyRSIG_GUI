@@ -757,10 +757,12 @@ class BatchImportPage(ft.Container):
         self._status_log.add_info(f"Processing {job.total_sites} sites with batch size {batch_size}")
 
         # Create scheduler and start
+        api_key = self.config.rsig_api_key if self.config else ""
         self._scheduler = BatchScheduler(
             db=self.db,
             data_dir=self.data_dir,
             max_concurrent_sites=batch_size,
+            api_key=api_key,
             on_progress=self._on_progress,
             on_site_complete=self._on_site_complete,
             on_job_complete=self._on_job_complete,
@@ -869,10 +871,12 @@ class BatchImportPage(ft.Container):
         self._status_log.add_info(f"Resuming job: {job.name}")
 
         # Create scheduler and start
+        api_key = self.config.rsig_api_key if self.config else ""
         self._scheduler = BatchScheduler(
             db=self.db,
             data_dir=self.data_dir,
             max_concurrent_sites=job.batch_size,
+            api_key=api_key,
             on_progress=self._on_progress,
             on_site_complete=self._on_site_complete,
             on_job_complete=self._on_job_complete,

@@ -128,6 +128,38 @@ class SettingsPage(ft.Container):
             ),
         ], spacing=10))
         
+        # API Key Section
+        self._api_key_input = ft.TextField(
+            value=self.config.rsig_api_key,
+            label="RSIG API Key",
+            password=True,
+            can_reveal_password=True,
+            text_style=ft.TextStyle(color=Colors.ON_SURFACE),
+            border_color=Colors.BORDER,
+            expand=True,
+            text_size=14,
+            hint_text="Enter your NASA RSIG API key (optional)",
+        )
+        
+        api_section = SectionCard("API Configuration", ft.Column([
+            ft.Text("NASA RSIG API Key", color=Colors.ON_SURFACE),
+            ft.Row([
+                ft.Icon(ft.Icons.KEY, color=Colors.PRIMARY),
+                self._api_key_input,
+                ft.IconButton(
+                    icon=ft.Icons.SAVE, 
+                    icon_color=Colors.PRIMARY,
+                    tooltip="Save API Key",
+                    on_click=self._on_save_api_key
+                )
+            ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ft.Text(
+                "An API key is recommended for reliable data downloads. "
+                "Leave empty for anonymous access (may have limits).", 
+                size=12, color=Colors.ON_SURFACE_VARIANT
+            ),
+        ], spacing=10))
+        
         # Content
         self.content = ft.Column([
             header,
@@ -136,6 +168,8 @@ class SettingsPage(ft.Container):
             appearance_section,
             ft.Container(height=10),
             download_section,
+            ft.Container(height=10),
+            api_section,
             ft.Container(height=20),
         ], scroll=ft.ScrollMode.AUTO)
         
@@ -158,6 +192,20 @@ class SettingsPage(ft.Container):
         if self.page:
             self.page.snack_bar = ft.SnackBar(
                 ft.Text(f"Download workers set to {new_workers}"),
+                duration=2000
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+
+    def _on_save_api_key(self, e):
+        """Save the API key."""
+        api_key = self._api_key_input.value.strip()
+        self.config.set("rsig_api_key", api_key)
+        
+        if self.page:
+            msg = "API key saved!" if api_key else "API key cleared (using anonymous access)"
+            self.page.snack_bar = ft.SnackBar(
+                ft.Text(msg),
                 duration=2000
             )
             self.page.snack_bar.open = True

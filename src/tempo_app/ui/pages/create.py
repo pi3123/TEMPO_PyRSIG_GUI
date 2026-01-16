@@ -1537,7 +1537,8 @@ class CreatePage(ft.Container):
             
             # Initialize downloader with the named dataset directory and configured workers
             num_workers = self.config.download_workers if self.config else 4
-            downloader = RSIGDownloader(datasets_dir, max_concurrent=num_workers)
+            api_key = self.config.rsig_api_key if self.config else ""
+            downloader = RSIGDownloader(datasets_dir, max_concurrent=num_workers, api_key=api_key)
             adapter = UIStatusAdapter(
                 self._status_log, 
                 self._progress_panel,

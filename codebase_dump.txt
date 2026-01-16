@@ -1,6 +1,6 @@
 ==================================
 TEMPO Analyzer Codebase Dump
-Generated: Thu Jan 15 21:48:38 PST 2026
+Generated: Thu Jan 15 23:24:28 PST 2026
 ==================================
 
 
@@ -29,6 +29,11 @@ class ParsedSite:
     site_name: str
     latitude: float
     longitude: float
+
+    custom_date_start: Optional[str] = None  # ISO format date string
+    custom_date_end: Optional[str] = None  # ISO format date string
+    custom_max_cloud: Optional[float] = None  # Max cloud fraction
+    custom_max_sza: Optional[float] = None  # Max solar zenith angle
     error: Optional[str] = None  # Validation error for this row
 
 
@@ -98,16 +103,15 @@ def _parse_date_value(value) -> Optional[str]:
     return str(value)
 
 
-def parse_import_file(file_path: Path, default_radius_km: float = 10.0) -> ParseResult:
+def parse_import_file(file_path: Path) -> ParseResult:
     """Parse an Excel or CSV file for batch site import.
 
     Expected columns:
         Required: name (or site_name), latitude (or lat), longitude (or lon)
-        Optional: radius_km, date_start, date_end, max_cloud, max_sza
+        Optional: date_start, date_end, max_cloud, max_sza
 
     Args:
         file_path: Path to .xlsx, .xls, or .csv file
-        default_radius_km: Default radius if not specified per-site
 
     Returns:
         ParseResult with parsed sites and any errors/warnings
@@ -160,6 +164,11 @@ def parse_import_file(file_path: Path, default_radius_km: float = 10.0) -> Parse
         return result
 
     # Find optional columns
+    # Radius column removed as per user request
+    date_start_col = _find_column(df, ["date_start", "start_date"])
+    date_end_col = _find_column(df, ["date_end", "end_date"])
+    max_cloud_col = _find_column(df, ["max_cloud", "cloud_fraction", "cloud"])
+    max_sza_col = _find_column(df, ["max_sza", "sza", "solar_zenith"])
 
     # Parse each row
     for idx, row in df.iterrows():
@@ -203,6 +212,25 @@ def parse_import_file(file_path: Path, default_radius_km: float = 10.0) -> Parse
             result.sites.append(site)
             continue
 
+        # Parse optional fields
+        if date_start_col and pd.notna(row[date_start_col]):
+            site.custom_date_start = _parse_date_value(row[date_start_col])
+
+        if date_end_col and pd.notna(row[date_end_col]):
+            site.custom_date_end = _parse_date_value(row[date_end_col])
+
+        if max_cloud_col and pd.notna(row[max_cloud_col]):
+            try:
+                site.custom_max_cloud = float(row[max_cloud_col])
+            except (ValueError, TypeError):
+                result.warnings.append(f"Row {row_num}: Invalid max_cloud, using default")
+
+        if max_sza_col and pd.notna(row[max_sza_col]):
+            try:
+                site.custom_max_sza = float(row[max_sza_col])
+            except (ValueError, TypeError):
+                result.warnings.append(f"Row {row_num}: Invalid max_sza, using default")
+
         result.sites.append(site)
 
     # Final validation
@@ -225,7 +253,6 @@ def create_sample_excel(file_path: Path, num_sites: int = 5) -> None:
         "name": [f"Site_{i+1}" for i in range(num_sites)],
         "latitude": [40.0 + i * 0.5 for i in range(num_sites)],
         "longitude": [-111.0 - i * 0.5 for i in range(num_sites)],
-        "radius_km": [10.0] * num_sites,
         "date_start": ["2024-01-01"] * num_sites,
         "date_end": ["2024-01-31"] * num_sites,
         "max_cloud": [0.3] * num_sites,
@@ -1547,6 +1574,33 @@ class DataExporter:
             # Create hourly data DataFrame
             df = pd.DataFrame(data)
             
+            # Add Month and Hour columns for fill calculation
+            if isinstance(time_values, pd.DatetimeIndex):
+                df['Month'] = time_values.month
+                df['Hour'] = time_values.hour
+            else:
+                # If only hours, we need dates from somewhere - assume single day
+                df['Month'] = 1  # Placeholder
+                df['Hour'] = [int(h) for h in time_values]
+            
+            # Get value columns (NO2 and HCHO)
+            value_cols = [c for c in df.columns if '_NO2' in c or '_HCHO' in c]
+            
+            # Create NoFill version (replace NaN with -999)
+            df_nofill = df.copy()
+            for col in value_cols:
+                df_nofill[col] = df_nofill[col].fillna(MISSING_VALUE)
+            
+            # Create Fill version (apply monthly-hourly mean fill)
+            df_fill = apply_monthly_hourly_fill(df.copy(), value_cols)
+            for col in value_cols:
+                df_fill[col] = df_fill[col].fillna(MISSING_VALUE)  # Any remaining NaN -> -999
+            
+            # Drop Month/Hour from output (they were just for grouping)
+            cols_to_drop = ['Month', 'Hour']
+            df_nofill_out = df_nofill.drop(columns=cols_to_drop, errors='ignore')
+            df_fill_out = df_fill.drop(columns=cols_to_drop, errors='ignore')
+            
             # Create Grid_Info sheet with cell metadata
             grid_info = []
             for i, (r, c, dist) in enumerate(cells):
@@ -1566,7 +1620,8 @@ class DataExporter:
             # Save to Excel with multiple sheets
             fname = self.output_dir / f"{site}_{dataset_name}_hourly_multicell.xlsx"
             with pd.ExcelWriter(fname, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Hourly_Data', index=False)
+                df_nofill_out.to_excel(writer, sheet_name='Hourly_NoFill', index=False)
+                df_fill_out.to_excel(writer, sheet_name='Hourly_Fill', index=False)
                 df_grid.to_excel(writer, sheet_name='Grid_Info', index=False)
                 if metadata:
                     # Add site-specific stats to metadata
@@ -1578,11 +1633,17 @@ class DataExporter:
                     hcho_missing = df.filter(like='_HCHO').isna().sum().sum()
                     hcho_total = df.filter(like='_HCHO').size
                     
+                    # Count fill values applied
+                    nofill_missing = (df_nofill_out.filter(like='_NO2') == MISSING_VALUE).sum().sum()
+                    fill_missing = (df_fill_out.filter(like='_NO2') == MISSING_VALUE).sum().sum()
+                    filled_count = nofill_missing - fill_missing
+                    
                     stats_rows = pd.DataFrame([
                         {'Parameter': 'Site', 'Value': site},
                         {'Parameter': 'Total_Time_Steps', 'Value': total_pts},
                         {'Parameter': 'NO2_Missing_Pct', 'Value': f"{(no2_missing/no2_total)*100:.1f}%" if no2_total else "0%"},
-                        {'Parameter': 'HCHO_Missing_Pct', 'Value': f"{(hcho_missing/hcho_total)*100:.1f}%" if hcho_total else "0%"}
+                        {'Parameter': 'HCHO_Missing_Pct', 'Value': f"{(hcho_missing/hcho_total)*100:.1f}%" if hcho_total else "0%"},
+                        {'Parameter': 'Fill_Applied_Count', 'Value': filled_count}
                     ])
                     meta_final = pd.concat([meta_df, stats_rows], ignore_index=True)
                     meta_final.to_excel(writer, sheet_name='Metadata', index=False)
@@ -1631,11 +1692,14 @@ class DataExporter:
             # Find cells
             if distance_km is not None:
                 cells = find_cells_within_distance(t_lat, t_lon, lats, lons, distance_km)
+                # For radius mode, use TEMPO_NoFill_NO2_Xkm style columns
+                radius_str = f"{int(distance_km)}km" if distance_km == int(distance_km) else f"{distance_km}km"
+                use_radius_naming = True
             else:
                 cells = find_n_nearest_cells(t_lat, t_lon, lats, lons, num_points)
+                use_radius_naming = False
             
             n_cells = len(cells)
-            half_cells = n_cells // 2 if n_cells > 1 else n_cells
             
             # Extract raw data for all cells
             raw_data = {
@@ -1673,36 +1737,57 @@ class DataExporter:
                 row = {'Date': date, 'Site': site}
                 grp_filled = df_filled[df_filled['Date'] == date]
                 
-                # Use half cells and full cells based on selected num_points
-                for cell_count, label in [(half_cells, str(half_cells)), (n_cells, str(n_cells))]:
-                    # NoFill
-                    no2_cols_n = [f'Cell{i}_NO2' for i in range(cell_count) if f'Cell{i}_NO2' in grp.columns]
-                    hcho_cols_n = [f'Cell{i}_HCHO' for i in range(cell_count) if f'Cell{i}_HCHO' in grp.columns]
-                    
-                    if no2_cols_n:
-                        no2_vals = grp[no2_cols_n].values.flatten()
-                        no2_valid = no2_vals[~np.isnan(no2_vals)]
-                        row[f'NO2_NoFill_{label}_Avg'] = np.mean(no2_valid) if len(no2_valid) > 0 else MISSING_VALUE
-                        row[f'NO2_NoFill_{label}_Cnt'] = len(no2_valid)
-                    
-                    if hcho_cols_n:
-                        hcho_vals = grp[hcho_cols_n].values.flatten()
-                        hcho_valid = hcho_vals[~np.isnan(hcho_vals)]
-                        row[f'HCHO_NoFill_{label}_Avg'] = np.mean(hcho_valid) if len(hcho_valid) > 0 else MISSING_VALUE
-                        row[f'HCHO_NoFill_{label}_Cnt'] = len(hcho_valid)
-                    
-                    # Fill
-                    if no2_cols_n:
-                        no2_vals_f = grp_filled[no2_cols_n].values.flatten()
-                        no2_valid_f = no2_vals_f[~np.isnan(no2_vals_f)]
-                        row[f'NO2_Fill_{label}_Avg'] = np.mean(no2_valid_f) if len(no2_valid_f) > 0 else MISSING_VALUE
-                        row[f'NO2_Fill_{label}_Cnt'] = len(no2_valid_f)
-                    
-                    if hcho_cols_n:
-                        hcho_vals_f = grp_filled[hcho_cols_n].values.flatten()
-                        hcho_valid_f = hcho_vals_f[~np.isnan(hcho_vals_f)]
-                        row[f'HCHO_Fill_{label}_Avg'] = np.mean(hcho_valid_f) if len(hcho_valid_f) > 0 else MISSING_VALUE
-                        row[f'HCHO_Fill_{label}_Cnt'] = len(hcho_valid_f)
+                # Column naming based on mode
+                if use_radius_naming:
+                    no2_nofill_col = f'TEMPO_NoFill_NO2_{radius_str}'
+                    no2_nofill_cnt_col = 'TEMPO_NoFill_NO2_Cnt'
+                    hcho_nofill_col = f'TEMPO_NoFill_HCHO_{radius_str}'
+                    hcho_nofill_cnt_col = 'TEMPO_NoFill_HCHO_Cnt'
+                    no2_fill_col = f'TEMPO_Fill_NO2_{radius_str}'
+                    no2_fill_cnt_col = 'TEMPO_Fill_NO2_Cnt'
+                    hcho_fill_col = f'TEMPO_Fill_HCHO_{radius_str}'
+                    hcho_fill_cnt_col = 'TEMPO_Fill_HCHO_Cnt'
+                else:
+                    label = str(n_cells)
+                    no2_nofill_col = f'NO2_NoFill_{label}_Avg'
+                    no2_nofill_cnt_col = f'NO2_NoFill_{label}_Cnt'
+                    hcho_nofill_col = f'HCHO_NoFill_{label}_Avg'
+                    hcho_nofill_cnt_col = f'HCHO_NoFill_{label}_Cnt'
+                    no2_fill_col = f'NO2_Fill_{label}_Avg'
+                    no2_fill_cnt_col = f'NO2_Fill_{label}_Cnt'
+                    hcho_fill_col = f'HCHO_Fill_{label}_Avg'
+                    hcho_fill_cnt_col = f'HCHO_Fill_{label}_Cnt'
+                
+                # NoFill
+                if no2_cols:
+                    no2_vals = grp[no2_cols].values.flatten()
+                    no2_valid = no2_vals[~np.isnan(no2_vals)]
+                    # Also filter out fill values
+                    no2_valid = no2_valid[(no2_valid > -900) & (no2_valid < 1e20)]
+                    row[no2_nofill_col] = np.mean(no2_valid) if len(no2_valid) > 0 else MISSING_VALUE
+                    row[no2_nofill_cnt_col] = len(no2_valid)
+                
+                if hcho_cols:
+                    hcho_vals = grp[hcho_cols].values.flatten()
+                    hcho_valid = hcho_vals[~np.isnan(hcho_vals)]
+                    hcho_valid = hcho_valid[(hcho_valid > -900) & (hcho_valid < 1e20)]
+                    row[hcho_nofill_col] = np.mean(hcho_valid) if len(hcho_valid) > 0 else MISSING_VALUE
+                    row[hcho_nofill_cnt_col] = len(hcho_valid)
+                
+                # Fill
+                if no2_cols:
+                    no2_vals_f = grp_filled[no2_cols].values.flatten()
+                    no2_valid_f = no2_vals_f[~np.isnan(no2_vals_f)]
+                    no2_valid_f = no2_valid_f[(no2_valid_f > -900) & (no2_valid_f < 1e20)]
+                    row[no2_fill_col] = np.mean(no2_valid_f) if len(no2_valid_f) > 0 else MISSING_VALUE
+                    row[no2_fill_cnt_col] = len(no2_valid_f)
+                
+                if hcho_cols:
+                    hcho_vals_f = grp_filled[hcho_cols].values.flatten()
+                    hcho_valid_f = hcho_vals_f[~np.isnan(hcho_vals_f)]
+                    hcho_valid_f = hcho_valid_f[(hcho_valid_f > -900) & (hcho_valid_f < 1e20)]
+                    row[hcho_fill_col] = np.mean(hcho_valid_f) if len(hcho_valid_f) > 0 else MISSING_VALUE
+                    row[hcho_fill_cnt_col] = len(hcho_valid_f)
                 
                 all_rows.append(row)
         
@@ -2840,41 +2925,57 @@ class MapPlotter:
         import time
 
         try:
-            print(f"DEBUG: Generating map for {variable} @ H{hour}")
+            logger.info(f"Generating map for {variable} @ H{hour}")
             if 'cartopy.crs' not in sys.modules:
-                print("DEBUG: Cartopy not loaded, using fallback.")
+                logger.warning("Cartopy not loaded, using fallback.")
                 return self._generate_dummy_map(variable, hour)
 
+            # Extract date range and available hours info for title
+            import pandas as pd
+            date_range_str = ""
+            
             # Extract data for the specific hour
             # Handle processed data with TIME (new), TSTEP (old datetime), or HOUR (aggregated) dims
             if 'TIME' in dataset.dims:
+                timestamps = pd.to_datetime(dataset.TIME.values)
+                date_range_str = f"{timestamps.min().strftime('%Y-%m-%d')} to {timestamps.max().strftime('%Y-%m-%d')}"
+                available_hours = sorted(set(timestamps.hour.tolist()))
+                
                 # New format: TIME is datetime, need to extract by hour and average
                 if hour not in dataset.TIME.dt.hour.values:
                     print(f"DEBUG: Hour {hour} not found in dataset TIME: {dataset.TIME.dt.hour.values}")
                     return None
                 ds_hour = dataset.sel(TIME=dataset.TIME.dt.hour == hour).mean(dim='TIME')
             elif 'TSTEP' in dataset.dims:
+                timestamps = pd.to_datetime(dataset.TSTEP.values)
+                date_range_str = f"{timestamps.min().strftime('%Y-%m-%d')} to {timestamps.max().strftime('%Y-%m-%d')}"
+                available_hours = sorted(set(timestamps.hour.tolist()))
+                
                 # Old format: TSTEP is datetime, need to extract by hour
                 if hour not in dataset.TSTEP.dt.hour.values:
                     print(f"DEBUG: Hour {hour} not found in dataset TSTEP: {dataset.TSTEP.dt.hour.values}")
                     return None
                 ds_hour = dataset.sel(TSTEP=dataset.TSTEP.dt.hour == hour).mean(dim='TSTEP')
             elif 'HOUR' in dataset.dims:
+                available_hours = sorted(dataset.HOUR.values.tolist())
+                
                 # Aggregated format: dimension is integer hours
                 if hour not in dataset.HOUR.values:
                     print(f"DEBUG: Hour {hour} not found in dataset HOURs: {dataset.HOUR.values}")
                     return None
                 ds_hour = dataset.sel(HOUR=hour)
             elif 'hour' in dataset.dims:
+                available_hours = sorted(dataset.hour.values.tolist())
+                
                 # Legacy format: dimension is integer hours
                 if hour not in dataset.hour.values:
                     print(f"DEBUG: Hour {hour} not found in dataset hours: {dataset.hour.values}")
                     return None
                 ds_hour = dataset.sel(hour=hour)
             else:
-                print(f"DEBUG: Dataset has no recognized time dimension. Dims: {list(dataset.dims)}")
+                logger.error(f"Dataset has no recognized time dimension. Dims: {list(dataset.dims)}")
                 return None
-            print(f"DEBUG: Extracted hour {hour} slice.")
+            logger.debug(f"Extracted hour {hour} slice.")
             
             if variable == 'FNR':
                 data = ds_hour['FNR']
@@ -2907,7 +3008,7 @@ class MapPlotter:
                 
             data = data.squeeze(drop=True)
             if data.isnull().all():
-                print(f"DEBUG: Data for {variable} is all NaN (empty) for hour {hour}.")
+                logger.warning(f"Data for {variable} is all NaN (empty) for hour {hour}.")
                 return None
 
             # Setup plot
@@ -2937,7 +3038,7 @@ class MapPlotter:
             try:
                 self._add_road_overlay(ax, bbox, road_detail, road_scale)
             except Exception as road_err:
-                print(f"DEBUG: Road overlay failed (non-fatal): {road_err}")
+                logger.warning(f"Road overlay failed (non-fatal): {road_err}")
             
             # Plot Data
             mesh = ax.pcolormesh(lons, lats, data, cmap=cmap, norm=norm, 
@@ -2968,7 +3069,15 @@ class MapPlotter:
             cbar.ax.tick_params(labelsize=font_size)
             cbar.set_label(label, size=font_size)
             ax.gridlines(draw_labels=True, linewidth=1, color='gray', alpha=0.3, linestyle='--')
-            ax.set_title(f"{variable} - {dataset_name}\n{hour:02d}:00 UTC", fontsize=title_size)
+            # Build title with extra info
+            title_parts = [f"{variable} - {dataset_name}"]
+            if date_range_str:
+                title_parts.append(date_range_str)
+            
+            # Add current hour line
+            title_parts.append(f"{hour:02d}:00 UTC")
+            
+            ax.set_title("\n".join(title_parts), fontsize=title_size)
             
             # Save to temp file with descriptive name + unique timestamp
             import time
@@ -2979,7 +3088,7 @@ class MapPlotter:
             plt.savefig(temp_path, dpi=100, bbox_inches='tight')
             plt.close(fig)
             
-            print(f"DEBUG: Map saved to {temp_path}")
+            logger.info(f"Map saved to {temp_path}")
             return str(temp_path)
             
         except Exception as e:
@@ -6217,6 +6326,44 @@ class StatusLogPanel(ft.Container):
         self._log_column.controls.clear()
         self.update()
 
+    def get_handler(self):
+        """Get a logging handler that outputs to this panel."""
+        return StatusLogHandler(self)
+
+
+class StatusLogHandler:
+    """A logging handler that outputs to a StatusLogPanel."""
+    # This is a dummy class definition that will be replaced by the actual inheritance
+    # But since we can't import logging at the top level without potential circular imports or
+    # messing up the file, we'll do it inside.
+    # update: Actually standard library imports are fine.
+    pass
+
+import logging
+
+class StatusLogHandler(logging.Handler):
+    """A logging handler that outputs to a StatusLogPanel."""
+    
+    def __init__(self, panel: StatusLogPanel):
+        super().__init__()
+        self.panel = panel
+        self.setFormatter(logging.Formatter('%(message)s'))
+        
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            # Map log levels to panel methods
+            if record.levelno >= logging.ERROR:
+                self.panel.add_error(msg)
+            elif record.levelno >= logging.WARNING:
+                self.panel.add_warning(msg)
+            elif record.levelno >= logging.INFO:
+                self.panel.add_info(msg)
+            else:
+                self.panel.add_info(msg) # DEBUG etc
+        except Exception:
+            self.handleError(record)
+
 
 class ProgressPanel(ft.Container):
     """A progress panel showing overall download progress.
@@ -6636,15 +6783,13 @@ HELP_TEXTS = {
         "- latitude (or lat): Site latitude in decimal degrees\n"
         "- longitude (or lon): Site longitude in decimal degrees\n\n"
         "Optional columns:\n"
-        "- radius_km: Custom radius for bounding box (default: 10km)\n"
         "- date_start, date_end: Custom date range for this site\n"
         "- max_cloud, max_sza: Custom quality filters"
     ),
     "default_radius": (
         "Default radius in kilometers for calculating bounding boxes.\n\n"
         "A bounding box will be created around each site's coordinates\n"
-        "using this radius. Sites can override this with a custom radius\n"
-        "in the Excel file.\n\n"
+        "using this radius.\n\n"
         "Typical values: 5-20 km depending on area of interest."
     ),
     "batch_size": (
@@ -6708,12 +6853,12 @@ class BatchImportPage(ft.Container):
         # Sites preview table
         self._sites_table = ft.DataTable(
             columns=[
-                ft.DataColumn(ft.Text("Row", size=12)),
-                ft.DataColumn(ft.Text("Name", size=12)),
-                ft.DataColumn(ft.Text("Latitude", size=12)),
-                ft.DataColumn(ft.Text("Longitude", size=12)),
-                ft.DataColumn(ft.Text("Radius", size=12)),
-                ft.DataColumn(ft.Text("Status", size=12)),
+                ft.DataColumn(ft.Text("Row", size=12, color=Colors.ON_SURFACE)),
+                ft.DataColumn(ft.Text("Name", size=12, color=Colors.ON_SURFACE)),
+                ft.DataColumn(ft.Text("Latitude", size=12, color=Colors.ON_SURFACE)),
+                ft.DataColumn(ft.Text("Longitude", size=12, color=Colors.ON_SURFACE)),
+
+                ft.DataColumn(ft.Text("Status", size=12, color=Colors.ON_SURFACE)),
             ],
             rows=[],
             border=ft.border.all(1, Colors.BORDER),
@@ -7153,8 +7298,7 @@ class BatchImportPage(ft.Container):
         self._file_path_text.italic = False
 
         # Parse the file
-        default_radius = self._default_radius.value
-        self._parse_result = parse_import_file(file_path, default_radius)
+        self._parse_result = parse_import_file(file_path)
 
         # Update UI with results
         self._update_parse_results()
@@ -7185,7 +7329,7 @@ class BatchImportPage(ft.Container):
         # Update table
         rows = []
         for site in result.sites[:50]:  # Limit to 50 for performance
-            radius_text = f"{site.radius_km:.1f}" if site.radius_km else "default"
+
 
             if site.error:
                 status_icon = ft.Icon(ft.Icons.ERROR, size=16, color=Colors.ERROR)
@@ -7196,12 +7340,12 @@ class BatchImportPage(ft.Container):
 
             rows.append(ft.DataRow(
                 cells=[
-                    ft.DataCell(ft.Text(str(site.row_number), size=12)),
-                    ft.DataCell(ft.Text(site.site_name[:20], size=12)),
-                    ft.DataCell(ft.Text(f"{site.latitude:.4f}", size=12)),
-                    ft.DataCell(ft.Text(f"{site.longitude:.4f}", size=12)),
-                    ft.DataCell(ft.Text(radius_text, size=12)),
-                    ft.DataCell(ft.Row([status_icon, ft.Text(status_text, size=11)], spacing=4)),
+                    ft.DataCell(ft.Text(str(site.row_number), size=12, color=Colors.ON_SURFACE)),
+                    ft.DataCell(ft.Text(site.site_name[:20], size=12, color=Colors.ON_SURFACE)),
+                    ft.DataCell(ft.Text(f"{site.latitude:.4f}", size=12, color=Colors.ON_SURFACE)),
+                    ft.DataCell(ft.Text(f"{site.longitude:.4f}", size=12, color=Colors.ON_SURFACE)),
+
+                    ft.DataCell(ft.Row([status_icon, ft.Text(status_text, size=11, color=Colors.ON_SURFACE)], spacing=4)),
                 ]
             ))
 
@@ -7323,7 +7467,7 @@ class BatchImportPage(ft.Container):
         # Create batch sites
         batch_sites = []
         for i, parsed_site in enumerate(self._parse_result.valid_sites):
-            radius = parsed_site.radius_km or default_radius
+            radius = default_radius
             bbox = bbox_from_center(parsed_site.latitude, parsed_site.longitude, radius)
 
             batch_site = BatchSite(
@@ -9166,23 +9310,20 @@ class CreatePage(ft.Container):
 ========================================
 FILE: src/tempo_app/ui/pages/export.py
 ========================================
-"""Export Page - Dedicated data export interface.
-
-Allows users to select a dataset, configure export parameters, preview the output structure,
-and generate Excel files.
-"""
+"""Export Page - Dedicated data export interface."""
 
 import flet as ft
 from pathlib import Path
 import asyncio
 import pandas as pd
 import xarray as xr
+import numpy as np
 from typing import Optional
 import logging
 
-from ..theme import Colors, Spacing
+from ..theme import Colors, Spacing, Typography
 from ...storage.database import Database
-from ...storage.models import Dataset, Site, DatasetStatus
+from ...storage.models import Dataset, Site
 from ...core.exporter import DataExporter
 from ..components.widgets import StatusLogPanel
 
@@ -9193,14 +9334,13 @@ class ExportPage(ft.Container):
         super().__init__()
         self.db = db
         self.data_dir = data_dir
-        self.dataset_id = dataset_id  # Pre-selected ID from navigation
+        self.dataset_id = dataset_id # Can be passed from navigation
         self.exporter = DataExporter(data_dir)
         
-        # Internal state
+        # State
         self._dataset: Optional[Dataset] = None
         self._sites: list[Site] = []
         
-        # Configure container properties
         self.expand = True
         self.padding = 0
         self.bgcolor = Colors.BACKGROUND
@@ -9208,515 +9348,734 @@ class ExportPage(ft.Container):
         self._build()
 
     def did_mount(self):
-        """Called when the control is added to the page."""
-        # Run initial data load in the background to keep UI responsive
+        """Load data when mounted."""
         self.page.run_task(self._load_initial_data)
 
-    def _get_shell(self):
-        """Helper to get the parent AppShell for navigation."""
-        if self.page and self.page.controls:
-            return self.page.controls[0]
-        return None
-
-    # =========================================================================
-    # Data Loading Logic
-    # =========================================================================
-
     async def _load_initial_data(self):
-        """Load the list of datasets and handle initial selection."""
-        try:
-            # Fetch all datasets
-            datasets = await asyncio.to_thread(self.db.get_all_datasets)
-            
-            # Populate dropdown options
-            options = []
-            for ds in datasets:
-                # Add status icon/text to dropdown label
-                status_char = "✅" if ds.status == DatasetStatus.COMPLETE else "⏳"
-                label = f"{status_char} {ds.name} ({ds.date_start} - {ds.date_end})"
-                options.append(ft.DropdownOption(key=ds.id, text=label))
-            
-            self._dataset_dropdown.options = options
+        """Load datasets and initial state."""
+        # Load all datasets for dropdown
+        datasets = await asyncio.to_thread(self.db.get_all_datasets)
+        
+        options = []
+        for ds in datasets:
+            # Only show completed datasets? Or all? User req: "Complete"
+            # Assuming all for now, maybe filter by status if we had it.
+            options.append(ft.DropdownOption(key=ds.id, text=ds.name))
+        self._dataset_dropdown.options = options
 
-            # Handle Pre-selection
-            target_id = self.dataset_id
+        # Pre-select if ID provided, or defaults
+        if self.dataset_id:
+            # Validate it exists
+            if any(d.id == self.dataset_id for d in datasets):
+                self._dataset_dropdown.value = self.dataset_id
+                await self._load_selected_dataset()
+            else:
+                self.dataset_id = None
+        
+        if not self.dataset_id and options:
+            # Optional: Select first by default or leave empty
+            # self._dataset_dropdown.value = options[0].key
+            # await self._load_selected_dataset()
+            pass
             
-            # If a specific ID was requested and exists
-            if target_id and any(d.id == target_id for d in datasets):
-                self._dataset_dropdown.value = target_id
-                # Trigger the full load for this dataset
-                await self._load_selected_dataset(target_id)
-            elif options:
-                # Optional: Auto-select the first one if nothing selected
-                pass
-            
-            self.update()
-            
-        except Exception as e:
-            logging.error(f"Error loading initial export data: {e}")
-            if hasattr(self, '_status_log'):
-                self._status_log.add_error(f"Failed to load datasets: {e}")
+        self.update()
 
-    async def _load_selected_dataset(self, ds_id: str):
-        """Load details for a specific dataset ID."""
+    async def _load_selected_dataset(self):
+        """Load the full dataset object and update UI."""
+        ds_id = self._dataset_dropdown.value
+        logging.info(f"ExportPage: Loading dataset ID {ds_id}")
+        self._status_log.add_info(f"Loading dataset info for ID: {ds_id}")
+        self.update()
+        
         if not ds_id:
+            logging.warning("ExportPage: No dataset ID selected")
             return
 
-        # Update UI to Loading State
-        if hasattr(self, '_dataset_info'):
-            self._dataset_info.value = "Loading metadata..."
-            self._dataset_info.update()
-        
-        self._export_btn.disabled = True
-        self._export_btn.update()
-
-        if hasattr(self, '_status_log'):
-            self._status_log.add_info(f"Loading dataset ID: {ds_id}...")
-
-        try:
-            # 1. Get Dataset Record
-            self._dataset = await asyncio.to_thread(self.db.get_dataset, ds_id)
+        self._dataset = await asyncio.to_thread(self.db.get_dataset, ds_id)
+        if self._dataset:
+            # Update info text
+            self._dataset_info.value = f"Selected: {self._dataset.name}\n" \
+                                       f"Range: {self._dataset.date_start} to {self._dataset.date_end}"
             
-            if not self._dataset:
-                raise ValueError("Dataset record not found in database.")
-
-            # 2. Get Associated Sites
+            # Load sites
+            logging.info(f"ExportPage: Loading sites in bbox {self._dataset.bbox}")
             self._sites = await asyncio.to_thread(
                 self.db.get_sites_in_bbox, self._dataset.bbox
             )
-
-            # 3. Update UI Info
-            info_text = (
-                f"📅 Date Range: {self._dataset.date_start} to {self._dataset.date_end}\n"
-                f"📍 Region: {len(self._sites)} sites in area\n"
-                f"☁️ Filters: Cloud < {self._dataset.max_cloud}, SZA < {self._dataset.max_sza}"
-            )
-            self._dataset_info.value = info_text
-            self._export_btn.disabled = False
+            logging.info(f"ExportPage: Found {len(self._sites)} sites")
             
-            if hasattr(self, '_status_log'):
-                self._status_log.add_success(f"Loaded '{self._dataset.name}'")
-
-            # 4. Refresh Preview Table
+            # Update Preview
             await self._update_preview()
-
-        except Exception as e:
-            logging.error(f"Error loading dataset {ds_id}: {e}")
-            if hasattr(self, '_status_log'):
-                self._status_log.add_error(f"Error: {e}")
-            self._dataset_info.value = "Error loading dataset details."
-            self._dataset = None
-        
+            
+        else:
+            logging.error(f"ExportPage: Dataset {ds_id} returned None from DB")
+            self._status_log.add_error(f"Failed to load dataset {ds_id}")
+            
         self.update()
 
+    def _is_valid_value(self, val) -> bool:
+        """Check if a value is valid (not NaN and not a fill value)."""
+        if pd.isna(val):
+            return False
+        # Filter out common fill values (large negative numbers)
+        # Many datasets use values like -9.99e36 or -999 as fill values
+        if val < -1e30:  # Filter out extremely large negative values
+            return False
+        if val < -900:  # Filter out common fill values like -999
+            return False
+        # Also filter extremely large positive values (likely fill values)
+        if val > 1e30:
+            return False
+        # NO2/HCHO values should reasonably be in range 1e13 to 1e18 molecules/cm2
+        # Values outside this range are suspect
+        if abs(val) > 1e20:
+            return False
+        return True
+
     async def _update_preview(self):
-        """Generate a preview of the export data structure."""
+        """Update the data preview table based on current config."""
         if not self._dataset:
             self._preview_table.rows = []
             return
 
+        logging.info("ExportPage: Updating preview...")
+        self._status_log.add_info("Updating preview...")
         self._progress.visible = True
-        self._progress.update()
-
+        self.update()
+        
         try:
-            # Locate the Processed NetCDF file
+            # Find processed file
             if self._dataset.file_path and Path(self._dataset.file_path).exists():
-                file_path = Path(self._dataset.file_path)
+                processed_path = Path(self._dataset.file_path)
             else:
-                # Fallback path construction
+                # Fallback path logic
                 safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in self._dataset.name)
-                file_path = self.data_dir / "datasets" / safe_name / f"{safe_name}_processed.nc"
+                processed_path = self.data_dir / "datasets" / safe_name / f"{safe_name}_processed.nc"
 
-            if not file_path.exists():
-                if hasattr(self, '_status_log'):
-                    self._status_log.add_warning("Processed data file not found. Please process dataset first.")
+            logging.info(f"ExportPage: Looking for processed file at {processed_path}")
+
+            if not processed_path.exists():
+                logging.error(f"ExportPage: Processed file not found at {processed_path}")
+                self._status_log.add_error(f"Data file not found at {processed_path}")
                 self._progress.visible = False
                 self.update()
                 return
 
-            # Open dataset lazily
-            ds = await asyncio.to_thread(xr.open_dataset, file_path)
+            # Open with xarray (lazy)
+            ds = await asyncio.to_thread(xr.open_dataset, processed_path)
             
-            # Get User Settings
+            # Depending on format, show different columns
             fmt = self._format_radio.value
+            utc_offset = float(self._utc_offset.value)
+            
+            # Get spatial aggregation settings
+            spatial_mode = self._spatial_mode.value  # "points" or "radius"
             try:
-                utc_offset = float(self._utc_offset.value)
+                spatial_value = float(self._spatial_value.value)
             except ValueError:
-                utc_offset = -6.0
-
-            # Generate Mock Data for Preview
+                spatial_value = 9.0
+            
+            preview_rows = []
             columns = []
-            rows = []
             
-            # Get a sample site name
-            sample_site = self._sites[0].code if self._sites else "SITE_01"
+            # Get first site info for cell selection
+            site_lat = self._sites[0].latitude if self._sites else None
+            site_lon = self._sites[0].longitude if self._sites else None
+            site_code = self._sites[0].code if self._sites else "N/A"
+            
+            # Determine time dimension
+            time_dim = None
+            time_values = None
+            if 'TIME' in ds.dims:
+                time_dim = 'TIME'
+                time_values = pd.to_datetime(ds.TIME.values)
+            elif 'TSTEP' in ds.dims:
+                time_dim = 'TSTEP'
+                time_values = pd.to_datetime(ds.TSTEP.values)
+            elif 'HOUR' in ds.dims:
+                time_dim = 'HOUR'
+                time_values = ds.HOUR.values
+            
+            # Get coordinate arrays
+            lats = ds['LAT'].values if 'LAT' in ds.coords else None
+            lons = ds['LON'].values if 'LON' in ds.coords else None
+            
+            # Find cells based on spatial settings
+            selected_cells = []  # List of (row, col) tuples
+            
+            if lats is not None and lons is not None and site_lat is not None and site_lon is not None:
+                # Calculate distances from site to all grid cells
+                from math import radians, sin, cos, sqrt, atan2
+                
+                def haversine(lat1, lon1, lat2, lon2):
+                    R = 6371.0  # Earth radius in km
+                    lat1_rad, lon1_rad = radians(lat1), radians(lon1)
+                    lat2_rad, lon2_rad = radians(lat2), radians(lon2)
+                    dlat = lat2_rad - lat1_rad
+                    dlon = lon2_rad - lon1_rad
+                    a = sin(dlat / 2)**2 + cos(lat1_rad) * cos(lat2_rad) * sin(dlon / 2)**2
+                    c = 2 * atan2(sqrt(a), sqrt(1 - a))
+                    return R * c
+                
+                # Calculate distances for all cells
+                cell_distances = []
+                for i in range(lats.shape[0]):
+                    for j in range(lats.shape[1]):
+                        dist = haversine(site_lat, site_lon, lats[i, j], lons[i, j])
+                        cell_distances.append((i, j, dist))
+                
+                # Sort by distance
+                cell_distances.sort(key=lambda x: x[2])
+                
+                if spatial_mode == "points":
+                    # Take N nearest cells
+                    n_points = int(spatial_value)
+                    selected_cells = [(r, c) for r, c, _ in cell_distances[:n_points]]
+                else:  # radius
+                    # Take all cells within distance
+                    selected_cells = [(r, c) for r, c, d in cell_distances if d <= spatial_value]
+                    if not selected_cells:
+                        # If no cells within radius, take at least 1
+                        selected_cells = [(cell_distances[0][0], cell_distances[0][1])]
+            else:
+                # Fallback to center cell
+                if lats is not None:
+                    row_idx = lats.shape[0] // 2
+                    col_idx = lats.shape[1] // 2
+                else:
+                    row_idx, col_idx = 0, 0
+                selected_cells = [(row_idx, col_idx)]
+            
+            logging.info(f"ExportPage: Using {len(selected_cells)} cells for preview (mode={spatial_mode}, value={spatial_value})")
+            
+            # Limit to first 10 timesteps
+            num_preview = min(10, len(time_values) if time_values is not None else 0)
 
+            
             if fmt == "hourly":
-                columns = ["UTC Time", f"Local (UTC{utc_offset:+})", "Site", "NO2_Trop", "HCHO_Tot"]
+                n_cells = len(selected_cells)
+                use_fill = self._use_fill.value
                 
-                # Get first 5 timestamps
-                times = []
-                if 'TIME' in ds.dims:
-                    times = pd.to_datetime(ds.TIME.values[:5])
-                elif 'TSTEP' in ds.dims:
-                    times = pd.to_datetime(ds.TSTEP.values[:5])
+                # Build columns to match export format: UTC_Time, Local_Time, Cell1_NO2, Cell1_HCHO, ...
+                columns = ["UTC_Time", f"Local_Time (UTC{utc_offset:+.1f})"]
+                for i in range(min(n_cells, 3)):  # Limit preview to first 3 cells
+                    columns.extend([f"Cell{i+1}_NO2", f"Cell{i+1}_HCHO"])
+                if n_cells > 3:
+                    columns.append(f"... +{n_cells - 3} more")
                 
-                if len(times) == 0: 
-                    times = [pd.Timestamp.now()] # Fallback
-
-                for t in times:
-                    local_t = t + pd.Timedelta(hours=utc_offset)
-                    rows.append(ft.DataRow([
-                        ft.DataCell(ft.Text(str(t), size=12)),
-                        ft.DataCell(ft.Text(str(local_t), size=12)),
-                        ft.DataCell(ft.Text(sample_site, size=12)),
-                        ft.DataCell(ft.Text("4.52e+15", size=12, font_family="monospace")),
-                        ft.DataCell(ft.Text("1.20e+16", size=12, font_family="monospace")),
-                    ]))
-
-            elif fmt == "daily":
-                columns = ["Date", "Site", "NO2_Avg", "HCHO_Avg", "Count"]
-                rows.append(ft.DataRow([
-                    ft.DataCell(ft.Text("2024-06-01", size=12)),
-                    ft.DataCell(ft.Text(sample_site, size=12)),
-                    ft.DataCell(ft.Text("3.80e+15", size=12, font_family="monospace")),
-                    ft.DataCell(ft.Text("1.15e+16", size=12, font_family="monospace")),
-                    ft.DataCell(ft.Text("8", size=12)),
-                ]))
-                rows.append(ft.DataRow([
-                    ft.DataCell(ft.Text("2024-06-02", size=12)),
-                    ft.DataCell(ft.Text(sample_site, size=12)),
-                    ft.DataCell(ft.Text("4.10e+15", size=12, font_family="monospace")),
-                    ft.DataCell(ft.Text("1.22e+16", size=12, font_family="monospace")),
-                    ft.DataCell(ft.Text("7", size=12)),
-                ]))
-
-            elif fmt == "spatial_average":
-                columns = ["UTC", "Local", "Site", "NO2_Spatial", "HCHO_Spatial"]
-                rows.append(ft.DataRow([
-                    ft.DataCell(ft.Text("16:00:00", size=12)),
-                    ft.DataCell(ft.Text("10:00:00", size=12)),
-                    ft.DataCell(ft.Text(sample_site, size=12)),
-                    ft.DataCell(ft.Text("3.95e+15", size=12, font_family="monospace")),
-                    ft.DataCell(ft.Text("1.18e+16", size=12, font_family="monospace")),
-                ]))
-
-            ds.close()
-
-            # Update Table
-            self._preview_table.columns = [
-                ft.DataColumn(ft.Text(col, weight=ft.FontWeight.BOLD, color=Colors.ON_SURFACE)) 
-                for col in columns
-            ]
-            self._preview_table.rows = rows
+                for t_idx in range(num_preview):
+                    # Get time
+                    if time_values is not None:
+                        t = time_values[t_idx]
+                        if isinstance(t, (pd.Timestamp, np.datetime64)):
+                            t = pd.Timestamp(t)
+                            local_t = t + pd.Timedelta(hours=utc_offset)
+                            utc_str = t.strftime("%Y-%m-%d %H:%M")
+                            local_str = local_t.strftime("%Y-%m-%d %H:%M")
+                        else:
+                            utc_str = f"{int(t):02d}:00 UTC"
+                            local_h = (int(t) + int(utc_offset)) % 24
+                            local_str = f"{local_h:02d}:00 Local"
+                    else:
+                        utc_str = f"T{t_idx}"
+                        local_str = f"T{t_idx}"
+                    
+                    cells = [
+                        ft.DataCell(ft.Text(utc_str, color=Colors.ON_SURFACE)),
+                        ft.DataCell(ft.Text(local_str, color=Colors.ON_SURFACE)),
+                    ]
+                    
+                    # Add per-cell values (first 3 cells)
+                    for cell_idx, (row_idx, col_idx) in enumerate(selected_cells[:3]):
+                        no2_str = "-999"
+                        hcho_str = "-999"
+                        
+                        if 'NO2_TropVCD' in ds:
+                            try:
+                                val = ds['NO2_TropVCD'].isel(**{time_dim: t_idx}, ROW=row_idx, COL=col_idx).values.item()
+                                if self._is_valid_value(val):
+                                    no2_str = f"{val:.2e}"
+                            except Exception:
+                                pass
+                        
+                        if 'HCHO_TotVCD' in ds:
+                            try:
+                                val = ds['HCHO_TotVCD'].isel(**{time_dim: t_idx}, ROW=row_idx, COL=col_idx).values.item()
+                                if self._is_valid_value(val):
+                                    hcho_str = f"{val:.2e}"
+                            except Exception:
+                                pass
+                        
+                        cells.extend([
+                            ft.DataCell(ft.Text(no2_str, color=Colors.ON_SURFACE)),
+                            ft.DataCell(ft.Text(hcho_str, color=Colors.ON_SURFACE)),
+                        ])
+                    
+                    if n_cells > 3:
+                        cells.append(ft.DataCell(ft.Text("...", color=Colors.ON_SURFACE_VARIANT)))
+                    
+                    preview_rows.append(ft.DataRow(cells=cells))
             
-        except Exception as e:
-            logging.error(f"Preview generation failed: {e}")
-            if hasattr(self, '_status_log'):
-                self._status_log.add_warning(f"Could not generate preview: {e}")
+            elif fmt == "daily":
+                min_hours = int(self._min_hours_slider.value)
+                use_fill = self._use_fill.value
+                n_cells = len(selected_cells)
+                spatial_mode = self._spatial_mode.value
+                
+                # Simpler column names for radius mode (include km in name)
+                if spatial_mode == "radius":
+                    try:
+                        radius_km = float(self._spatial_value.value)
+                    except ValueError:
+                        radius_km = 10.0
+                    radius_str = f"{int(radius_km)}km" if radius_km == int(radius_km) else f"{radius_km}km"
+                    
+                    columns = [
+                        "Date", "Site",
+                        f"TEMPO_NoFill_NO2_{radius_str}", f"TEMPO_NoFill_NO2_Cnt",
+                        f"TEMPO_NoFill_HCHO_{radius_str}", f"TEMPO_NoFill_HCHO_Cnt"
+                    ]
+                    if use_fill:
+                        columns.extend([
+                            f"TEMPO_Fill_NO2_{radius_str}", f"TEMPO_Fill_NO2_Cnt",
+                            f"TEMPO_Fill_HCHO_{radius_str}", f"TEMPO_Fill_HCHO_Cnt"
+                        ])
+                else:
+                    # N-points mode: include cell count in column name
+                    columns = [
+                        "Date", "Site",
+                        f"NO2_NoFill_{n_cells}_Avg", f"NO2_NoFill_{n_cells}_Cnt",
+                        f"HCHO_NoFill_{n_cells}_Avg", f"HCHO_NoFill_{n_cells}_Cnt"
+                    ]
+                    if use_fill:
+                        columns.extend([
+                            f"NO2_Fill_{n_cells}_Avg", f"NO2_Fill_{n_cells}_Cnt",
+                            f"HCHO_Fill_{n_cells}_Avg", f"HCHO_Fill_{n_cells}_Cnt"
+                        ])
+                
+                # Group by date and compute daily averages
+                if time_values is not None and len(time_values) > 0:
+                    # Collect all values by date
+                    daily_data = {}  # date -> {'no2_vals': [], 'hcho_vals': []}
+                    
+                    for t_idx in range(len(time_values)):
+                        t = time_values[t_idx]
+                        if isinstance(t, (pd.Timestamp, np.datetime64)):
+                            t = pd.Timestamp(t)
+                            local_t = t + pd.Timedelta(hours=utc_offset)
+                            date_str = local_t.strftime("%Y-%m-%d")
+                        else:
+                            date_str = "Unknown"
+                        
+                        if date_str not in daily_data:
+                            daily_data[date_str] = {'no2_vals': [], 'hcho_vals': [], 'hours': 0}
+                        
+                        daily_data[date_str]['hours'] += 1
+                        
+                        # Collect values from all selected cells for this timestep
+                        for row_idx, col_idx in selected_cells:
+                            if 'NO2_TropVCD' in ds:
+                                try:
+                                    val = ds['NO2_TropVCD'].isel(**{time_dim: t_idx}, ROW=row_idx, COL=col_idx).values.item()
+                                    if self._is_valid_value(val):
+                                        daily_data[date_str]['no2_vals'].append(val)
+                                except Exception:
+                                    pass
+                            if 'HCHO_TotVCD' in ds:
+                                try:
+                                    val = ds['HCHO_TotVCD'].isel(**{time_dim: t_idx}, ROW=row_idx, COL=col_idx).values.item()
+                                    if self._is_valid_value(val):
+                                        daily_data[date_str]['hcho_vals'].append(val)
+                                except Exception:
+                                    pass
+                    
+                    # Build rows matching export format
+                    sorted_dates = sorted(daily_data.keys())[:10]  # First 10 days
+                    
+                    for date_str in sorted_dates:
+                        data = daily_data[date_str]
+                        hours = data['hours']
+                        
+                        # NoFill: only if hours >= min_hours
+                        if hours >= min_hours:
+                            no2_avg = np.nanmean(data['no2_vals']) if data['no2_vals'] else -999
+                            hcho_avg = np.nanmean(data['hcho_vals']) if data['hcho_vals'] else -999
+                            no2_cnt = len(data['no2_vals'])
+                            hcho_cnt = len(data['hcho_vals'])
+                        else:
+                            no2_avg = -999  # MISSING_VALUE indicator
+                            hcho_avg = -999
+                            no2_cnt = 0
+                            hcho_cnt = 0
+                        
+                        # Format values
+                        no2_avg_str = f"{no2_avg:.2e}" if no2_avg != -999 else "-999"
+                        hcho_avg_str = f"{hcho_avg:.2e}" if hcho_avg != -999 else "-999"
+                        
+                        cells = [
+                            ft.DataCell(ft.Text(date_str, color=Colors.ON_SURFACE)),
+                            ft.DataCell(ft.Text(site_code, color=Colors.ON_SURFACE)),
+                            ft.DataCell(ft.Text(no2_avg_str, color=Colors.ON_SURFACE)),
+                            ft.DataCell(ft.Text(str(no2_cnt), color=Colors.ON_SURFACE)),
+                            ft.DataCell(ft.Text(hcho_avg_str, color=Colors.ON_SURFACE)),
+                            ft.DataCell(ft.Text(str(hcho_cnt), color=Colors.ON_SURFACE)),
+                        ]
+                        
+                        if use_fill:
+                            # Fill: always compute (even if < min_hours)
+                            # For preview, show that Fill will have >= NoFill counts
+                            # Real export uses monthly-hourly means which will fill more gaps
+                            no2_fill_avg = np.nanmean(data['no2_vals']) if data['no2_vals'] else -999
+                            hcho_fill_avg = np.nanmean(data['hcho_vals']) if data['hcho_vals'] else -999
+                            
+                            # In actual export, fill counts will be >= nofill counts
+                            # Show with + indicator to indicate fill will add values
+                            no2_fill_cnt = len(data['no2_vals'])
+                            hcho_fill_cnt = len(data['hcho_vals'])
+                            
+                            no2_fill_str = f"{no2_fill_avg:.2e}" if no2_fill_avg != -999 else "-999"
+                            hcho_fill_str = f"{hcho_fill_avg:.2e}" if hcho_fill_avg != -999 else "-999"
+                            
+                            # Show counts with + to indicate fill will have more
+                            no2_cnt_str = f"{no2_fill_cnt}+" if no2_fill_cnt > 0 else "0"
+                            hcho_cnt_str = f"{hcho_fill_cnt}+" if hcho_fill_cnt > 0 else "0"
+                            
+                            cells.extend([
+                                ft.DataCell(ft.Text(no2_fill_str, color=Colors.ON_SURFACE)),
+                                ft.DataCell(ft.Text(no2_cnt_str, color=Colors.ON_SURFACE)),
+                                ft.DataCell(ft.Text(hcho_fill_str, color=Colors.ON_SURFACE)),
+                                ft.DataCell(ft.Text(hcho_cnt_str, color=Colors.ON_SURFACE)),
+                            ])
+                        
+                        preview_rows.append(ft.DataRow(cells=cells))
 
+            # Update DataTable columns and rows
+            logging.info(f"ExportPage: Setting {len(columns)} columns and {len(preview_rows)} rows for format '{fmt}'")
+            self._preview_table.columns = [ft.DataColumn(ft.Text(c, color=Colors.ON_SURFACE)) for c in columns]
+            self._preview_table.rows = preview_rows
+            self._preview_table.update()  # Explicitly update the table
+            
+            ds.close()
+            self._status_log.add_info(f"Preview updated for {fmt} - showing {len(preview_rows)} rows")
+            logging.info(f"ExportPage: Preview updated successfully for {fmt}")
+
+        except Exception as e:
+            import traceback
+            logging.error(f"ExportPage: Preview error: {e}")
+            logging.error(traceback.format_exc())
+            self._status_log.add_error(f"Preview error: {e}")
+        
         self._progress.visible = False
         self.update()
 
-    # =========================================================================
-    # Event Handlers
-    # =========================================================================
-
-    def _on_back_click(self, e):
-        """Handle navigation back to workspace."""
-        shell = self._get_shell()
-        if shell and hasattr(shell, 'navigate_to'):
-            # If we have a dataset, go to its workspace
-            if self._dataset:
-                shell.navigate_to(f"/workspace/{self._dataset.id}")
-            else:
-                shell.navigate_to("/library")
-
     def _on_dataset_change(self, e):
-        """Handle dropdown selection change."""
-        new_id = e.control.value
-        if new_id:
-            # Explicitly run the load task when changed manually
-            self.page.run_task(self._load_selected_dataset, new_id)
+        """Handle dataset dropdown change."""
+        print(f"DEBUG: _on_dataset_change triggered. Value: {self._dataset_dropdown.value}")
+        self._status_log.add_info("Selection changed...")
+        self.update()
+        self.page.run_task(self._load_selected_dataset)
 
     def _on_param_change(self, e):
-        """Handle configuration changes (Format, Offset, etc)."""
+        """Handle parameter changes to update preview."""
+        logging.info(f"ExportPage: _on_param_change triggered, format={self._format_radio.value}")
+        print(f"DEBUG: _on_param_change triggered, format={self._format_radio.value}")
+        self.page.run_task(self._update_preview)
+
+    def _on_min_hours_change(self, e):
+        """Handle min hours slider change."""
+        val = int(self._min_hours_slider.value)
+        self._min_hours_label.value = f"Min Hours for Daily (NOFILL): {val}"
+        self._min_hours_label.update()
         self.page.run_task(self._update_preview)
 
     def _on_export_click(self, e):
-        """Trigger the export process."""
-        self.page.run_task(self._run_export)
+        """Run the export process."""
+        self.page.run_task(self._export_async)
 
-    async def _run_export(self):
-        """Execute the export process asynchronously."""
+    async def _export_async(self):
+        """Async implementation of export process."""
         if not self._dataset:
+            self._status_log.add_error("Please select a dataset first.")
             return
 
         self._export_btn.disabled = True
         self._progress.visible = True
         self.update()
-
+        
         try:
+            # Prepare args
             ds_name = self._dataset.name
-            fmt_ui = self._format_radio.value
+            fmt = self._format_radio.value
+            utc_off = float(self._utc_offset.value)
             
-            try:
-                utc_offset = float(self._utc_offset.value)
-            except ValueError:
-                self._status_log.add_error("Invalid UTC Offset. Must be a number.")
-                return
-
-            spatial_mode = self._spatial_mode.value # 'points' or 'radius'
-            try:
-                spatial_val = float(self._spatial_value.value)
-            except ValueError:
-                spatial_val = 9.0
-
-            export_format_map = {
+            # Map radio selection to internal format strings
+            format_map = {
                 "hourly": "hourly",
                 "daily": "daily",
-                "spatial_average": "spatial_average"
             }
-            export_fmt = export_format_map.get(fmt_ui, "hourly")
-
-            num_points = int(spatial_val) if spatial_mode == "points" else None
-            distance_km = spatial_val if spatial_mode == "radius" else None
-
-            # Get Site Dictionary
-            sites_dict = {s.code: s.to_tuple() for s in self._sites} if self._sites else None
-
-            # Prepare Metadata
-            metadata = {
-                "dataset_id": self._dataset.id,
-                "exported_by": "Tempo Analyzer",
-                "spatial_mode": spatial_mode,
-                "spatial_value": spatial_val
-            }
-
-            self._status_log.add_info(f"Starting export for '{ds_name}'...")
-            self._status_log.add_info(f"Format: {fmt_ui.upper()}, Offset: {utc_offset}")
-
-            # Locate File
+            export_fmt = format_map.get(fmt, "hourly")
+            
+            # Spatial mode
+            mode = self._spatial_mode.value
+            val = float(self._spatial_value.value)
+            
+            num_points = int(val) if mode == "points" else None
+            distance = val if mode == "radius" else None
+            
+            self._status_log.add_info(f"Starting export: {ds_name} ({fmt})...")
+            
+            # Find file
             if self._dataset.file_path and Path(self._dataset.file_path).exists():
                 processed_path = Path(self._dataset.file_path)
             else:
+                 # Fallback path logic
                 safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in self._dataset.name)
                 processed_path = self.data_dir / "datasets" / safe_name / f"{safe_name}_processed.nc"
-
+                
             if not processed_path.exists():
-                raise FileNotFoundError(f"Processed file not found at {processed_path}")
+                raise FileNotFoundError(f"Processed file not found: {processed_path}")
 
-            # Run Export in Thread
-            def run_export_sync():
-                ds = xr.open_dataset(processed_path)
-                result = self.exporter.export_dataset(
-                    dataset=ds,
-                    dataset_name=ds_name,
-                    export_format=export_fmt,
-                    num_points=num_points,
-                    distance_km=distance_km,
-                    utc_offset=utc_offset,
-                    metadata=metadata,
-                    sites=sites_dict
-                )
-                ds.close()
-                return result
+            # Run in thread
+            ds = await asyncio.to_thread(xr.open_dataset, processed_path)
+            
+            # Get sites dict
+            sites_dict = {s.code: s.to_tuple() for s in self._sites} if self._sites else None
 
-            files = await asyncio.to_thread(run_export_sync)
+            metadata = {
+                "dataset_id": self._dataset.id,
+                "exported_by": "Tempo Analyzer",
+                "spatial_mode": mode,
+                "spatial_value": val
+            }
 
+            files = await asyncio.to_thread(
+                self.exporter.export_dataset,
+                dataset=ds,
+                dataset_name=ds_name,
+                export_format=export_fmt,
+                utc_offset=utc_off,
+                num_points=num_points,
+                distance_km=distance,
+                sites=sites_dict,
+                metadata=metadata
+            )
+            
+            ds.close()
+            
             if files:
-                self._status_log.add_success(f"Export successful! Created {len(files)} file(s).")
-                for f in files:
-                    self._status_log.add_success(f"📄 {Path(f).name}")
-                self._status_log.add_info(f"Saved to: {self.exporter.output_dir}")
-                # TODO: Button to open folder
+                self._status_log.add_success(f"Export successful! Created {len(files)} files.")
+                self._status_log.add_success(f"Location: {self.exporter.output_dir}")
+                # Ideally show a button to open folder
             else:
-                self._status_log.add_warning("Process completed but no files were generated.")
+                self._status_log.add_warning("No files created.")
 
-        except Exception as e:
-            logging.error(f"Export failed: {e}")
-            import traceback
-            traceback.print_exc()
-            self._status_log.add_error(f"Export Failed: {e}")
+        except Exception as ex:
+             import traceback
+             traceback.print_exc()
+             self._status_log.add_error(f"Export failed: {ex}")
+        
+        self._export_btn.disabled = False
+        self._progress.visible = False
+        self.update()
 
-        finally:
-            self._export_btn.disabled = False
-            self._progress.visible = False
-            self.update()
-
-    # =========================================================================
-    # UI Construction
-    # =========================================================================
 
     def _build(self):
-        """Construct the visual hierarchy."""
+        """Build the UI layout."""
         
-        # --- LEFT PANEL: CONFIGURATION ---
+        # 1. Configuration Panel (Left)
+        # -----------------------------
         
+        # Dataset Selection
         self._dataset_dropdown = ft.Dropdown(
             label="Select Dataset",
             text_size=14,
             width=300,
             text_style=ft.TextStyle(color=Colors.ON_SURFACE),
             label_style=ft.TextStyle(color=Colors.ON_SURFACE_VARIANT),
-            border_color=Colors.BORDER,
-            focused_border_color=Colors.PRIMARY,
+            on_select=self._on_dataset_change,
         )
-        self._dataset_dropdown.on_change = self._on_dataset_change
-        
         self._dataset_info = ft.Text(
-            "Select a dataset to begin.",
-            size=12,
-            color=Colors.ON_SURFACE_VARIANT,
-            italic=True,
+            "No dataset selected", 
+            size=12, 
+            color=Colors.ON_SURFACE_VARIANT
         )
-
+        
+        # Format Selection
         self._format_radio = ft.RadioGroup(
             content=ft.Column([
                 ft.Radio(value="hourly", label="Hourly (Per Site)", label_style=ft.TextStyle(color=Colors.ON_SURFACE)),
                 ft.Radio(value="daily", label="Daily (Aggregated)", label_style=ft.TextStyle(color=Colors.ON_SURFACE)),
-                ft.Radio(value="spatial_average", label="Spatial Average", label_style=ft.TextStyle(color=Colors.ON_SURFACE)),
-            ], spacing=5),
+            ]),
             value="hourly",
             on_change=self._on_param_change
         )
-
+        
+        # Parameters
         self._utc_offset = ft.TextField(
-            label="UTC Offset",
-            value="-6.0",
-            width=100,
-            text_size=14,
+            label="Time Zone Offset (UTC)",
+            value="-6.0", 
+            width=100, 
             keyboard_type=ft.KeyboardType.NUMBER,
-            border_color=Colors.BORDER,
-            focused_border_color=Colors.PRIMARY,
             text_style=ft.TextStyle(color=Colors.ON_SURFACE),
-            on_change=self._on_param_change # Live update preview
+            label_style=ft.TextStyle(color=Colors.ON_SURFACE_VARIANT),
+            on_change=self._on_param_change # Update preview on change?
         )
-
+        
         self._spatial_mode = ft.RadioGroup(
-            content=ft.Row([
-                ft.Radio(value="points", label="N-Points", label_style=ft.TextStyle(color=Colors.ON_SURFACE, size=13)),
-                ft.Radio(value="radius", label="Radius (km)", label_style=ft.TextStyle(color=Colors.ON_SURFACE, size=13)),
-            ], spacing=10),
-            value="points"
+             content=ft.Row([
+                ft.Radio(value="points", label="N-Points", label_style=ft.TextStyle(color=Colors.ON_SURFACE)),
+                ft.Radio(value="radius", label="Radius (km)", label_style=ft.TextStyle(color=Colors.ON_SURFACE)),
+            ]),
+            value="points",
+            on_change=self._on_param_change
         )
-
+        
         self._spatial_value = ft.TextField(
-            label="Value",
+            label="Count / Dist",
             value="9",
-            width=80,
-            text_size=14,
+            width=100,
             keyboard_type=ft.KeyboardType.NUMBER,
-            border_color=Colors.BORDER,
-            focused_border_color=Colors.PRIMARY,
             text_style=ft.TextStyle(color=Colors.ON_SURFACE),
+            label_style=ft.TextStyle(color=Colors.ON_SURFACE_VARIANT),
+            on_change=self._on_param_change
+        )
+        
+        # Min hours slider for daily NOFILL
+        self._min_hours_label = ft.Text(
+            "Min Hours for Daily (NOFILL): 4",
+            size=12,
+            color=Colors.ON_SURFACE
+        )
+        self._min_hours_slider = ft.Slider(
+            min=1,
+            max=12,
+            value=4,
+            divisions=11,
+            label="{value}",
+            on_change=self._on_min_hours_change,
+            width=200,
+        )
+        
+        # Gap filling checkbox
+        self._use_fill = ft.Checkbox(
+            label="Apply Monthly Mean Fill",
+            value=False,
+            label_style=ft.TextStyle(color=Colors.ON_SURFACE),
+            on_change=self._on_param_change
         )
 
         self._export_btn = ft.FilledButton(
             "Export Excel File",
             icon=ft.Icons.DOWNLOAD,
             width=300,
-            height=45,
             on_click=self._on_export_click
         )
 
         config_panel = ft.Container(
             content=ft.Column([
-                ft.Text("1. Source Data", weight=ft.FontWeight.BOLD, color=Colors.PRIMARY, size=14),
+                ft.Text("1. Source", weight=ft.FontWeight.BOLD, size=16, color=Colors.ON_SURFACE),
                 self._dataset_dropdown,
                 self._dataset_info,
-                ft.Divider(color=Colors.DIVIDER),
+                ft.Divider(),
                 
-                ft.Text("2. Output Format", weight=ft.FontWeight.BOLD, color=Colors.PRIMARY, size=14),
+                ft.Text("2. Format", weight=ft.FontWeight.BOLD, size=16, color=Colors.ON_SURFACE),
                 self._format_radio,
-                ft.Divider(color=Colors.DIVIDER),
+                ft.Divider(),
                 
-                ft.Text("3. Parameters", weight=ft.FontWeight.BOLD, color=Colors.PRIMARY, size=14),
-                ft.Row([
-                    self._utc_offset,
-                    ft.Column([
-                        ft.Text("Spatial Aggregation", size=12, color=Colors.ON_SURFACE_VARIANT),
-                        self._spatial_mode,
-                    ])
-                ], alignment=ft.MainAxisAlignment.START, spacing=20),
+                ft.Text("3. Configuration", weight=ft.FontWeight.BOLD, size=16, color=Colors.ON_SURFACE),
+                self._utc_offset,
+                ft.Text("Spatial Aggregation:", size=14, weight=ft.FontWeight.W_500, color=Colors.ON_SURFACE),
+                self._spatial_mode,
+                self._spatial_value,
+                ft.Container(height=5),
+                ft.Text("Daily Settings:", size=14, weight=ft.FontWeight.W_500, color=Colors.ON_SURFACE),
+                self._min_hours_label,
+                self._min_hours_slider,
+                self._use_fill,
                 
-                ft.Row([
-                    ft.Text("Count / Radius:", size=13, color=Colors.ON_SURFACE),
-                    self._spatial_value
-                ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                
-                ft.Container(expand=True), 
+                ft.Divider(),
+                ft.Container(height=10),
                 self._export_btn,
                 
-            ], spacing=15, scroll=ft.ScrollMode.AUTO),
-            width=380,
-            padding=25,
-            bgcolor=Colors.SURFACE,
+            ], spacing=10, scroll=ft.ScrollMode.AUTO),
+            width=350,
+            padding=20,
             border=ft.border.only(right=ft.BorderSide(1, Colors.DIVIDER)),
+            bgcolor=Colors.SURFACE
         )
 
-        # --- RIGHT PANEL: PREVIEW & LOGS ---
 
+        # 2. Preview Panel (Right)
+        # ------------------------
+        
         self._preview_table = ft.DataTable(
-            columns=[ft.DataColumn(ft.Text("Preview Data", color=Colors.ON_SURFACE_VARIANT))],
+            columns=[ft.DataColumn(ft.Text("Select a dataset", color=Colors.ON_SURFACE))],
             rows=[],
-            heading_row_color=Colors.SURFACE_VARIANT,
-            heading_row_height=40,
-            data_row_min_height=40,
             border=ft.border.all(1, Colors.BORDER),
-            border_radius=8,
-            column_spacing=20,
+            vertical_lines=ft.border.BorderSide(1, Colors.BORDER),
+            horizontal_lines=ft.border.BorderSide(1, Colors.BORDER),
+            heading_row_color=Colors.SURFACE_VARIANT,
         )
-
-        self._progress = ft.ProgressBar(visible=False, color=Colors.PRIMARY, height=2)
+        
         self._status_log = StatusLogPanel()
+        self._progress = ft.ProgressBar(visible=False, color=Colors.PRIMARY)
 
         preview_panel = ft.Container(
             content=ft.Column([
                 ft.Row([
-                    ft.Icon(ft.Icons.TABLE_CHART, color=Colors.PRIMARY, size=20),
-                    ft.Text("Data Preview", weight=ft.FontWeight.W_600, size=16, color=Colors.ON_SURFACE),
+                    ft.Text("Data Preview", weight=ft.FontWeight.BOLD, size=18, color=Colors.ON_SURFACE),
                     ft.Container(expand=True),
-                    ft.IconButton(ft.Icons.REFRESH, tooltip="Refresh Preview", on_click=lambda e: self.page.run_task(self._update_preview))
-                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
-                
-                self._progress,
-                
+                    ft.TextButton("Refresh Preview", icon=ft.Icons.REFRESH, on_click=self._on_param_change)
+                ]),
                 ft.Container(
-                    content=ft.Column([self._preview_table], scroll=ft.ScrollMode.AUTO),
+                    content=ft.Row(
+                        [self._preview_table],
+                        scroll=ft.ScrollMode.AUTO,  # Horizontal scroll
+                    ),
                     expand=True,
                     border=ft.border.all(1, Colors.BORDER),
                     border_radius=8,
                     bgcolor=Colors.SURFACE,
-                    padding=0,
                 ),
-                
                 ft.Container(height=10),
-                self._status_log,
-            ], spacing=10),
-            padding=25,
-            expand=True,
+                ft.Text("Export Log", weight=ft.FontWeight.BOLD, color=Colors.ON_SURFACE),
+                self._progress,
+                ft.Container(
+                    content=self._status_log,
+                    height=150,
+                    border=ft.border.all(1, Colors.BORDER),
+                    border_radius=8,
+                )
+            ], expand=True, spacing=10),
+            padding=20,
+            expand=True
         )
 
-        # --- HEADER ---
+        # Header with Back button
         header = ft.Container(
             content=ft.Row([
-                ft.IconButton(ft.Icons.ARROW_BACK, on_click=self._on_back_click, tooltip="Back"),
-                ft.Text("Export Dataset", size=20, weight=ft.FontWeight.W_600, color=Colors.ON_SURFACE)
+                ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda e: self.page.go("/workspace")),
+                ft.Text("EXPORT DATASET", size=20, weight=ft.FontWeight.BOLD)
             ]),
-            padding=ft.padding.symmetric(horizontal=10, vertical=5),
+            padding=10,
             bgcolor=Colors.SURFACE,
             border=ft.border.only(bottom=ft.BorderSide(1, Colors.DIVIDER))
         )
 
-        # --- MAIN LAYOUT ---
         self.content = ft.Column([
-            header,
+            # header, # Nav bar handles nav? Or should I keep a back button to workspace? 
+            # Requirements said "[< Back to Workspace]". I'll include it.
+            # But "page.go" might not work if shell uses _on_route_change directly. 
+            # I'll rely on shell navigation if possible, but the button is visual.
+            # I'll enable the button to navigate to /workspace
+            
             ft.Row([
                 config_panel,
                 preview_panel
             ], expand=True, spacing=0)
-        ], expand=True, spacing=0)
+        ], expand=True)
+
+
 
 ========================================
 FILE: src/tempo_app/ui/pages/inspect.py
@@ -11982,7 +12341,7 @@ import asyncio
 import xarray as xr
 
 from ..theme import Colors, Spacing
-from ..components.widgets import SectionCard, StatusLogPanel
+from ..components.widgets import SectionCard
 from ...storage.database import Database
 from ...storage.models import Dataset, Site
 from ...core.plotter import MapPlotter
@@ -12044,7 +12403,8 @@ class WorkspacePage(ft.Container):
         
         if not dataset_id:
             self._dataset_title.value = "No datasets available"
-            self._status_log.add_warning("No dataset selected")
+            self._dataset_title.value = "No datasets available"
+            logging.warning("No dataset selected")
             return
             
         self._dataset = await asyncio.to_thread(self.db.get_dataset, dataset_id)
@@ -12057,14 +12417,14 @@ class WorkspacePage(ft.Container):
             )
             logging.info(f"Found {len(self._sites)} sites in bbox")
             self._update_sites_list()
-            self._status_log.add_info(f"Loaded: {self._dataset.name}")
-            self._status_log.add_info(f"Found {len(self._sites)} sites in bounds")
+            logging.info(f"Loaded: {self._dataset.name}")
+            logging.info(f"Found {len(self._sites)} sites in bounds")
             
             # Load available hours from dataset file
             await self._load_available_hours()
         else:
             self._dataset_title.value = "Dataset not found"
-            self._status_log.add_error(f"Dataset not found: {dataset_id}")
+            logging.error(f"Dataset not found: {dataset_id}")
 
     async def _load_available_hours(self):
         """Load available hours from the dataset file and update slider."""
@@ -12088,12 +12448,12 @@ class WorkspacePage(ft.Container):
                 timestamps = pd.to_datetime(ds.TIME.values)
                 available_hours = sorted(set(timestamps.hour.tolist()))
                 num_timesteps = len(timestamps)
-                self._status_log.add_info(f"Dataset has {num_timesteps} timesteps ({timestamps[0].date()} to {timestamps[-1].date()})")
+                logging.info(f"Dataset has {num_timesteps} timesteps ({timestamps[0].date()} to {timestamps[-1].date()})")
             elif 'TSTEP' in ds.dims:
                 timestamps = pd.to_datetime(ds.TSTEP.values)
                 available_hours = sorted(set(timestamps.hour.tolist()))
                 num_timesteps = len(timestamps)
-                self._status_log.add_info(f"Dataset has {num_timesteps} timesteps ({timestamps[0].date()} to {timestamps[-1].date()})")
+                logging.info(f"Dataset has {num_timesteps} timesteps ({timestamps[0].date()} to {timestamps[-1].date()})")
             # Fallback to HOUR dimension (old aggregated format)
             elif 'HOUR' in ds.coords:
                 available_hours = sorted(ds.HOUR.values.tolist())
@@ -12116,7 +12476,7 @@ class WorkspacePage(ft.Container):
                 self._hour_text.value = f"Hour: {min_hour} UTC"
                 
                 hours_str = ", ".join(f"{h}" for h in available_hours)
-                self._status_log.add_info(f"Available hours: {hours_str}")
+                logging.info(f"Available hours: {hours_str}")
                 logging.info(f"Set hour slider: min={min_hour}, max={max_hour}")
         except Exception as e:
             import logging
@@ -12231,6 +12591,7 @@ class WorkspacePage(ft.Container):
             label="Show Sites",
             value=True,
             label_style=ft.TextStyle(color=Colors.ON_SURFACE),
+            on_change=self._on_show_sites_change,
         )
 
         # Hour slider
@@ -12272,7 +12633,7 @@ class WorkspacePage(ft.Container):
         self._progress_bar = ft.ProgressBar(visible=False, color=Colors.PRIMARY)
 
         # Status log (shared for map and export)
-        self._status_log = StatusLogPanel()
+
 
         # Controls row
         controls_row = ft.Row([
@@ -12291,10 +12652,13 @@ class WorkspacePage(ft.Container):
 
         # Map container
         map_container = ft.Container(
-            content=ft.Stack([
-                self._map_placeholder,
-                self._map_image,
-            ]),
+            content=ft.Stack(
+                [
+                    self._map_placeholder,
+                    self._map_image,
+                ],
+                fit=ft.StackFit.EXPAND,
+            ),
             expand=True,
             border=ft.border.all(1, Colors.BORDER),
             border_radius=8,
@@ -12308,13 +12672,6 @@ class WorkspacePage(ft.Container):
             self._progress_bar,
             ft.Container(height=4),
             map_container,
-            ft.Container(height=8),
-            ft.Container(
-                content=self._status_log,
-                height=100,
-                border=ft.border.all(1, Colors.BORDER),
-                border_radius=8,
-            ),
         ], expand=True, spacing=0)
 
     def _build_sidebar(self):
@@ -12440,10 +12797,16 @@ class WorkspacePage(ft.Container):
         self._hour_text.value = f"Hour: {hour} UTC"
         self.update()
 
+    def _on_show_sites_change(self, e):
+        """Handle show sites checkbox change - regenerate map."""
+        if self._dataset and self._map_image.visible:
+            # Only regenerate if we have a map already displayed
+            self.page.run_task(self._generate_map_async)
+
     def _on_generate_click(self, e):
         """Generate the map."""
         if not self._dataset:
-            self._status_log.add_error("No dataset loaded")
+            logging.error("No dataset loaded")
             return
         self.page.run_task(self._generate_map_async)
 
@@ -12451,7 +12814,7 @@ class WorkspacePage(ft.Container):
         """Generate map asynchronously."""
         import logging
         self._progress_bar.visible = True
-        self._status_log.add_info(f"Generating map for hour {self._current_hour}...")
+        logging.info(f"Generating map for hour {self._current_hour}...")
         self.update()
 
         try:
@@ -12465,7 +12828,7 @@ class WorkspacePage(ft.Container):
             logging.info(f"Looking for processed file: {processed_path}")
             
             if not processed_path.exists():
-                self._status_log.add_error("Processed data not found")
+                logging.error("Processed data not found")
                 self._progress_bar.visible = False
                 self.update()
                 return
@@ -12473,10 +12836,11 @@ class WorkspacePage(ft.Container):
             ds = await asyncio.to_thread(xr.open_dataset, processed_path)
             logging.info(f"Opened dataset with dims: {list(ds.dims)}")
 
-            # Get sites if checkbox checked
-            sites = None
+            # Get sites if checkbox checked, otherwise pass empty dict to hide sites
             if self._show_sites_checkbox.value:
                 sites = {s.code: s.to_tuple() for s in self._sites}
+            else:
+                sites = {}  # Empty dict = no sites shown
 
             variable = self._variable_dropdown.value
             road_detail = self._road_dropdown.value
@@ -12498,23 +12862,23 @@ class WorkspacePage(ft.Container):
             ds.close()
             
             logging.info(f"Plotter returned: {plot_path}")
-            self._status_log.add_info(f"Plotter returned: {plot_path}")
+            logging.info(f"Plotter returned: {plot_path}")
 
             if plot_path:
                 if Path(plot_path).exists():
                     self._map_image.src = plot_path
                     self._map_image.visible = True
                     self._map_placeholder.visible = False
-                    self._status_log.add_success(f"Map generated: {variable} at {hour}:00 UTC")
+                    logging.info(f"Map generated: {variable} at {hour}:00 UTC")
                     logging.info(f"Map image set to: {plot_path}")
                 else:
-                    self._status_log.add_error(f"Plot path doesn't exist: {plot_path}")
+                    logging.error(f"Plot path doesn't exist: {plot_path}")
             else:
-                self._status_log.add_error(f"No map returned for hour {hour}")
+                logging.error(f"No map returned for hour {hour}")
 
         except Exception as ex:
             import traceback
-            self._status_log.add_error(f"Error: {ex}")
+            logging.error(f"Error: {ex}")
             logging.error(f"Map generation error: {ex}")
             traceback.print_exc()
         finally:
@@ -12524,7 +12888,7 @@ class WorkspacePage(ft.Container):
     async def _on_export_nav_click(self, e):
         """Navigate to export page with current dataset."""
         if not self._dataset:
-            self._status_log.add_warning("Select a dataset first to export.")
+            logging.warning("Select a dataset first to export.")
             return
             
         if self.page:

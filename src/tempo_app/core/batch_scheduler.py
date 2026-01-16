@@ -42,6 +42,7 @@ class BatchScheduler:
         db: Database,
         data_dir: Path,
         max_concurrent_sites: int = 5,
+        api_key: str = "",
         on_progress: Optional[Callable[[BatchJob, BatchSite, str], None]] = None,
         on_site_complete: Optional[Callable[[BatchSite], None]] = None,
         on_job_complete: Optional[Callable[[BatchJob], None]] = None,
@@ -52,6 +53,7 @@ class BatchScheduler:
             db: Database instance for persistence
             data_dir: Base directory for datasets
             max_concurrent_sites: Maximum sites to process in parallel
+            api_key: RSIG API key for downloads (empty = anonymous)
             on_progress: Callback for progress updates
             on_site_complete: Callback when a site finishes
             on_job_complete: Callback when the entire job finishes
@@ -59,6 +61,7 @@ class BatchScheduler:
         self.db = db
         self.data_dir = data_dir
         self.max_concurrent_sites = max_concurrent_sites
+        self.api_key = api_key
         self.on_progress = on_progress
         self.on_site_complete = on_site_complete
         self.on_job_complete = on_job_complete
@@ -229,7 +232,7 @@ class BatchScheduler:
                 self.on_progress(job, site, f"Downloading {site.site_name} ({len(granules)} granules)")
 
             # Download
-            downloader = RSIGDownloader(dataset_dir, max_concurrent=4)
+            downloader = RSIGDownloader(dataset_dir, max_concurrent=4, api_key=self.api_key)
             files = await downloader.download_granules(
                 dates=dates_list,
                 hours=hours_list,
