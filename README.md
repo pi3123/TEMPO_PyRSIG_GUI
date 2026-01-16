@@ -99,6 +99,71 @@ Access the **Settings** page to configure:
 *   **UI Scale**: Adjust text size for better readability on high-DPI screens.
 *   **Download Workers**: Number of parallel connections for faster downloads (default: 8).
 
+## How Downloading Works
+
+The application uses the EPA's [Remote Sensing Information Gateway (RSIG)](https://www.epa.gov/hesc/remote-sensing-information-gateway) API via the `pyrsig` Python library to retrieve TEMPO satellite data.
+
+### Architecture Overview
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   User Request  │───▶│  RSIGDownloader  │───▶│   EPA RSIG API  │
+│  (dates, bbox)  │    │  (parallel mgr)  │    │   (pyrsig lib)  │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+                              │
+                    ┌─────────┼─────────┐
+                    ▼         ▼         ▼
+              ┌─────────┐ ┌─────────┐ ┌─────────┐
+              │Worker 1 │ │Worker 2 │ │Worker N │  (parallel day downloads)
+              └────┬────┘ └────┬────┘ └────┬────┘
+                   │           │           │
+                   ▼           ▼           ▼
+              ┌───────────────────────────────────┐
+              │       Per-Hour NetCDF Files       │
+              │  tempo_2024-01-15_08.nc, etc.     │
+              └───────────────────────────────────┘
+```
+
+### Daily Batch Strategy
+
+Instead of making individual API calls for each hour (which would create excessive server load), the downloader uses a **daily batch strategy**:
+
+1.  **Batch Request**: For each day, a single API request fetches all hours at once (e.g., 08:00–20:00 UTC).
+2.  **Data Splitting**: The response is then split into per-hour NetCDF files for consistent downstream processing.
+3.  **Parallel Workers**: Multiple days are downloaded in parallel using a configurable number of workers (1–8, controlled by the `Download Workers` setting).
+
+### Worker Isolation
+
+Each parallel worker maintains its own:
+*   **Temporary directory**: Avoids file conflicts between concurrent downloads.
+*   **API session**: Independent connection to the RSIG server with its own `RsigApi` instance.
+*   **Progress tracking**: Thread-safe progress updates via async locks.
+
+### Data Products Retrieved
+
+For each granule, the downloader fetches:
+*   **NO₂ Tropospheric Vertical Column** (`tempo.l2.no2.vertical_column_troposphere`)
+*   **HCHO Total Vertical Column** (`tempo.l2.hcho.vertical_column`)
+
+These are combined into a single NetCDF file with quality filtering applied:
+*   `minimum_quality`: Normal quality or better
+*   `maximum_cloud_fraction`: Configurable (default: 50%)
+*   `maximum_solar_zenith_angle`: Configurable (default: 70°)
+
+### API Authentication
+
+The downloader supports two authentication modes:
+*   **Anonymous**: Default mode, uses `"anonymous"` as the API key.
+*   **User Key**: If configured in Settings, your personal RSIG API key is used for potentially higher rate limits.
+
+### File Naming Convention
+
+Downloaded files follow this naming pattern:
+```
+tempo_{date}_{hour}.nc
+```
+For example: `tempo_2024-06-15_14.nc` contains data for June 15, 2024 at 14:00 UTC.
+
 ## Development
 
 ### Project Structure
