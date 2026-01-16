@@ -349,15 +349,6 @@ class AppShell(ft.Container):
                     ),
                     # Spacer
                     ft.Container(expand=True),
-                    # Download button with dropdown
-                    ft.Stack([
-                        self._download_button,
-                        ft.Container(
-                            content=self._download_dropdown,
-                            right=0,
-                            top=44,
-                        ),
-                    ]),
                     # Settings button
                     settings_button,
                 ],

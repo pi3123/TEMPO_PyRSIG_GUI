@@ -81,27 +81,33 @@ class MapPlotter:
                 return self._generate_dummy_map(variable, hour)
 
             # Extract data for the specific hour
-            # Handle processed data (with 'hour' or 'HOUR' dim) and raw data (with 'TSTEP')
-            if 'HOUR' in dataset.dims:
-                # Processed dataset (uppercase convention): dimension is integer hours
+            # Handle processed data with TIME (new), TSTEP (old datetime), or HOUR (aggregated) dims
+            if 'TIME' in dataset.dims:
+                # New format: TIME is datetime, need to extract by hour and average
+                if hour not in dataset.TIME.dt.hour.values:
+                    print(f"DEBUG: Hour {hour} not found in dataset TIME: {dataset.TIME.dt.hour.values}")
+                    return None
+                ds_hour = dataset.sel(TIME=dataset.TIME.dt.hour == hour).mean(dim='TIME')
+            elif 'TSTEP' in dataset.dims:
+                # Old format: TSTEP is datetime, need to extract by hour
+                if hour not in dataset.TSTEP.dt.hour.values:
+                    print(f"DEBUG: Hour {hour} not found in dataset TSTEP: {dataset.TSTEP.dt.hour.values}")
+                    return None
+                ds_hour = dataset.sel(TSTEP=dataset.TSTEP.dt.hour == hour).mean(dim='TSTEP')
+            elif 'HOUR' in dataset.dims:
+                # Aggregated format: dimension is integer hours
                 if hour not in dataset.HOUR.values:
                     print(f"DEBUG: Hour {hour} not found in dataset HOURs: {dataset.HOUR.values}")
                     return None
                 ds_hour = dataset.sel(HOUR=hour)
             elif 'hour' in dataset.dims:
-                # Processed dataset (legacy convention): dimension is integer hours
+                # Legacy format: dimension is integer hours
                 if hour not in dataset.hour.values:
                     print(f"DEBUG: Hour {hour} not found in dataset hours: {dataset.hour.values}")
                     return None
                 ds_hour = dataset.sel(hour=hour)
-            elif 'TSTEP' in dataset.dims:
-                # Raw dataset: TSTEP is datetime, need to extract by hour
-                if hour not in dataset.TSTEP.dt.hour.values:
-                    print(f"DEBUG: Hour {hour} not found in dataset TSTEP: {dataset.TSTEP.dt.hour.values}")
-                    return None
-                ds_hour = dataset.sel(TSTEP=dataset.TSTEP.dt.hour == hour).mean(dim='TSTEP')
             else:
-                print(f"DEBUG: Dataset has neither 'hour' nor 'TSTEP' dimension. Dims: {list(dataset.dims)}")
+                print(f"DEBUG: Dataset has no recognized time dimension. Dims: {list(dataset.dims)}")
                 return None
             print(f"DEBUG: Extracted hour {hour} slice.")
             

@@ -15,6 +15,7 @@ from .ui.pages.inspect import InspectPage
 from .ui.pages.sites import SitesPage
 from .ui.pages.plot import PlotPage
 from .ui.pages.export import ExportPage
+from .ui.pages.workspace import WorkspacePage
 from .ui.pages.settings import SettingsPage
 from .ui.pages.batch_import import BatchImportPage
 from .storage.database import Database
@@ -131,10 +132,8 @@ class App:
         elif base_route == "/batch":
             content = BatchImportPage(db=self.db, config=self.config, data_dir=self.data_dir)
         elif base_route == "/workspace":
-            # Workspace page - unified Plot/Inspect/Export
-            # For now, fall back to PlotPage during transition
-            # TODO: Replace with WorkspacePage when implemented
-            content = PlotPage(db=self.db, data_dir=self.data_dir)
+            # Workspace page - unified Map/Export/Sites view
+            content = WorkspacePage(db=self.db, data_dir=self.data_dir, dataset_id=route_param)
         elif base_route == "/sites":
             content = SitesPage(db=self.db)
         elif base_route == "/settings":

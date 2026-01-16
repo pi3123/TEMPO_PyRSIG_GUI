@@ -176,22 +176,22 @@ class DataExporter:
 
     def _get_time_info(self, dataset: xr.Dataset):
         """Extract time dimension and values from dataset."""
-        time_dim = 'TSTEP' if 'TSTEP' in dataset.dims else 'HOUR' if 'HOUR' in dataset.dims else None
-        if time_dim is None:
-            return None, None
-        
-        if time_dim == 'TSTEP':
-            return time_dim, pd.to_datetime(dataset['TSTEP'].values)
-        else:
+        # Check for datetime dimensions: TIME (new), TSTEP (old), then HOUR
+        if 'TIME' in dataset.dims:
+            return 'TIME', pd.to_datetime(dataset['TIME'].values)
+        elif 'TSTEP' in dataset.dims:
+            return 'TSTEP', pd.to_datetime(dataset['TSTEP'].values)
+        elif 'HOUR' in dataset.dims:
             # HOUR dimension - check if datetime or just integers
             hour_values = dataset['HOUR'].values
             if np.issubdtype(hour_values.dtype, np.datetime64):
-                return time_dim, pd.to_datetime(hour_values)
+                return 'HOUR', pd.to_datetime(hour_values)
             else:
                 # Create datetime index from hour integers (use placeholder date)
-                # We'll need actual dates from the dataset or user
                 hours = [int(h) for h in hour_values]
-                return time_dim, hours  # Return raw hours, handle downstream
+                return 'HOUR', hours  # Return raw hours, handle downstream
+        else:
+            return None, None
 
     def _export_hourly(self, dataset: xr.Dataset, dataset_name: str,
                        utc_offset: float, num_points: int = 9,
@@ -327,13 +327,13 @@ class DataExporter:
             logger.warning("No sites found within dataset bounds")
             return []
 
-        # Handle time values
+        # Handle time values - require full timestamps
         if isinstance(time_values, pd.DatetimeIndex):
             utc_times = time_values
             local_times = utc_times + pd.Timedelta(hours=utc_offset)
         else:
-            # For hour-only data, we can't create proper daily aggregates
-            logger.warning("Daily export requires full timestamps, not just hours")
+            # Dataset doesn't have proper timestamps - needs reprocessing
+            logger.warning("Daily export requires full timestamps. Please reprocess the dataset.")
             return []
 
         all_rows = []
@@ -544,18 +544,12 @@ class DataExporter:
                 
                 for r, c, _ in cells:
                     if 'NO2_TropVCD' in dataset:
-                        # Handle TSTEP vs HOUR dimension
-                        if time_dim == 'TSTEP':
-                            val = dataset['NO2_TropVCD'].isel(TSTEP=t_idx, ROW=r, COL=c).item()
-                        else:
-                             val = dataset['NO2_TropVCD'].isel(HOUR=t_idx, ROW=r, COL=c).item()
+                        # Handle TIME, TSTEP, or HOUR dimension
+                        val = dataset['NO2_TropVCD'].isel(**{time_dim: t_idx}, ROW=r, COL=c).item()
                         no2_vals.append(val)
                     
                     if 'HCHO_TotVCD' in dataset:
-                        if time_dim == 'TSTEP':
-                            val = dataset['HCHO_TotVCD'].isel(TSTEP=t_idx, ROW=r, COL=c).item()
-                        else:
-                            val = dataset['HCHO_TotVCD'].isel(HOUR=t_idx, ROW=r, COL=c).item()
+                        val = dataset['HCHO_TotVCD'].isel(**{time_dim: t_idx}, ROW=r, COL=c).item()
                         hcho_vals.append(val)
                 
                 # Average (ignoring NaNs)
