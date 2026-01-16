@@ -141,6 +141,8 @@ class App:
                 config=self.config,
                 on_restart_request=self._show_restart_dialog
             )
+        elif base_route == "/export":
+            content = ExportPage(db=self.db, data_dir=self.data_dir, dataset_id=route_param)
         # Legacy routes (keep for backward compatibility during transition)
         elif route == "/create":
             content = CreatePage(db=self.db, config=self.config)
@@ -148,8 +150,6 @@ class App:
             content = PlotPage(db=self.db, data_dir=self.data_dir)
         elif route == "/inspect":
             content = InspectPage(db=self.db)
-        elif route == "/export":
-            content = ExportPage(db=self.db, data_dir=self.data_dir)
         else:
             content = self._create_page_placeholder("Unknown Page", "❓")
 

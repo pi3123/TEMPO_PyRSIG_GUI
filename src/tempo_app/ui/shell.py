@@ -125,10 +125,10 @@ NAV_ITEMS = [
         route="/workspace",
     ),
     NavigationItem(
-        icon=ft.Icons.PLACE_OUTLINED,
-        selected_icon=ft.Icons.PLACE,
-        label="Sites",
-        route="/sites",
+        icon=ft.Icons.FILE_DOWNLOAD_OUTLINED,
+        selected_icon=ft.Icons.FILE_DOWNLOAD,
+        label="Export",
+        route="/export",
     ),
 ]
 

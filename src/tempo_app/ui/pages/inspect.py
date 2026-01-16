@@ -474,7 +474,7 @@ class InspectPage(ft.Container):
             padding=10,
             border_radius=12,
             border=ft.border.all(1, Colors.BORDER),
-            alignment=ft.alignment.center,
+            alignment=ft.Alignment(0, 0),
         )
     
     def _stats_row(self, label: str, value) -> ft.Row:

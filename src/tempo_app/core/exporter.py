@@ -258,6 +258,33 @@ class DataExporter:
             # Create hourly data DataFrame
             df = pd.DataFrame(data)
             
+            # Add Month and Hour columns for fill calculation
+            if isinstance(time_values, pd.DatetimeIndex):
+                df['Month'] = time_values.month
+                df['Hour'] = time_values.hour
+            else:
+                # If only hours, we need dates from somewhere - assume single day
+                df['Month'] = 1  # Placeholder
+                df['Hour'] = [int(h) for h in time_values]
+            
+            # Get value columns (NO2 and HCHO)
+            value_cols = [c for c in df.columns if '_NO2' in c or '_HCHO' in c]
+            
+            # Create NoFill version (replace NaN with -999)
+            df_nofill = df.copy()
+            for col in value_cols:
+                df_nofill[col] = df_nofill[col].fillna(MISSING_VALUE)
+            
+            # Create Fill version (apply monthly-hourly mean fill)
+            df_fill = apply_monthly_hourly_fill(df.copy(), value_cols)
+            for col in value_cols:
+                df_fill[col] = df_fill[col].fillna(MISSING_VALUE)  # Any remaining NaN -> -999
+            
+            # Drop Month/Hour from output (they were just for grouping)
+            cols_to_drop = ['Month', 'Hour']
+            df_nofill_out = df_nofill.drop(columns=cols_to_drop, errors='ignore')
+            df_fill_out = df_fill.drop(columns=cols_to_drop, errors='ignore')
+            
             # Create Grid_Info sheet with cell metadata
             grid_info = []
             for i, (r, c, dist) in enumerate(cells):
@@ -277,7 +304,8 @@ class DataExporter:
             # Save to Excel with multiple sheets
             fname = self.output_dir / f"{site}_{dataset_name}_hourly_multicell.xlsx"
             with pd.ExcelWriter(fname, engine='openpyxl') as writer:
-                df.to_excel(writer, sheet_name='Hourly_Data', index=False)
+                df_nofill_out.to_excel(writer, sheet_name='Hourly_NoFill', index=False)
+                df_fill_out.to_excel(writer, sheet_name='Hourly_Fill', index=False)
                 df_grid.to_excel(writer, sheet_name='Grid_Info', index=False)
                 if metadata:
                     # Add site-specific stats to metadata
@@ -289,11 +317,17 @@ class DataExporter:
                     hcho_missing = df.filter(like='_HCHO').isna().sum().sum()
                     hcho_total = df.filter(like='_HCHO').size
                     
+                    # Count fill values applied
+                    nofill_missing = (df_nofill_out.filter(like='_NO2') == MISSING_VALUE).sum().sum()
+                    fill_missing = (df_fill_out.filter(like='_NO2') == MISSING_VALUE).sum().sum()
+                    filled_count = nofill_missing - fill_missing
+                    
                     stats_rows = pd.DataFrame([
                         {'Parameter': 'Site', 'Value': site},
                         {'Parameter': 'Total_Time_Steps', 'Value': total_pts},
                         {'Parameter': 'NO2_Missing_Pct', 'Value': f"{(no2_missing/no2_total)*100:.1f}%" if no2_total else "0%"},
-                        {'Parameter': 'HCHO_Missing_Pct', 'Value': f"{(hcho_missing/hcho_total)*100:.1f}%" if hcho_total else "0%"}
+                        {'Parameter': 'HCHO_Missing_Pct', 'Value': f"{(hcho_missing/hcho_total)*100:.1f}%" if hcho_total else "0%"},
+                        {'Parameter': 'Fill_Applied_Count', 'Value': filled_count}
                     ])
                     meta_final = pd.concat([meta_df, stats_rows], ignore_index=True)
                     meta_final.to_excel(writer, sheet_name='Metadata', index=False)
@@ -342,11 +376,14 @@ class DataExporter:
             # Find cells
             if distance_km is not None:
                 cells = find_cells_within_distance(t_lat, t_lon, lats, lons, distance_km)
+                # For radius mode, use TEMPO_NoFill_NO2_Xkm style columns
+                radius_str = f"{int(distance_km)}km" if distance_km == int(distance_km) else f"{distance_km}km"
+                use_radius_naming = True
             else:
                 cells = find_n_nearest_cells(t_lat, t_lon, lats, lons, num_points)
+                use_radius_naming = False
             
             n_cells = len(cells)
-            half_cells = n_cells // 2 if n_cells > 1 else n_cells
             
             # Extract raw data for all cells
             raw_data = {
@@ -384,36 +421,57 @@ class DataExporter:
                 row = {'Date': date, 'Site': site}
                 grp_filled = df_filled[df_filled['Date'] == date]
                 
-                # Use half cells and full cells based on selected num_points
-                for cell_count, label in [(half_cells, str(half_cells)), (n_cells, str(n_cells))]:
-                    # NoFill
-                    no2_cols_n = [f'Cell{i}_NO2' for i in range(cell_count) if f'Cell{i}_NO2' in grp.columns]
-                    hcho_cols_n = [f'Cell{i}_HCHO' for i in range(cell_count) if f'Cell{i}_HCHO' in grp.columns]
-                    
-                    if no2_cols_n:
-                        no2_vals = grp[no2_cols_n].values.flatten()
-                        no2_valid = no2_vals[~np.isnan(no2_vals)]
-                        row[f'NO2_NoFill_{label}_Avg'] = np.mean(no2_valid) if len(no2_valid) > 0 else MISSING_VALUE
-                        row[f'NO2_NoFill_{label}_Cnt'] = len(no2_valid)
-                    
-                    if hcho_cols_n:
-                        hcho_vals = grp[hcho_cols_n].values.flatten()
-                        hcho_valid = hcho_vals[~np.isnan(hcho_vals)]
-                        row[f'HCHO_NoFill_{label}_Avg'] = np.mean(hcho_valid) if len(hcho_valid) > 0 else MISSING_VALUE
-                        row[f'HCHO_NoFill_{label}_Cnt'] = len(hcho_valid)
-                    
-                    # Fill
-                    if no2_cols_n:
-                        no2_vals_f = grp_filled[no2_cols_n].values.flatten()
-                        no2_valid_f = no2_vals_f[~np.isnan(no2_vals_f)]
-                        row[f'NO2_Fill_{label}_Avg'] = np.mean(no2_valid_f) if len(no2_valid_f) > 0 else MISSING_VALUE
-                        row[f'NO2_Fill_{label}_Cnt'] = len(no2_valid_f)
-                    
-                    if hcho_cols_n:
-                        hcho_vals_f = grp_filled[hcho_cols_n].values.flatten()
-                        hcho_valid_f = hcho_vals_f[~np.isnan(hcho_vals_f)]
-                        row[f'HCHO_Fill_{label}_Avg'] = np.mean(hcho_valid_f) if len(hcho_valid_f) > 0 else MISSING_VALUE
-                        row[f'HCHO_Fill_{label}_Cnt'] = len(hcho_valid_f)
+                # Column naming based on mode
+                if use_radius_naming:
+                    no2_nofill_col = f'TEMPO_NoFill_NO2_{radius_str}'
+                    no2_nofill_cnt_col = 'TEMPO_NoFill_NO2_Cnt'
+                    hcho_nofill_col = f'TEMPO_NoFill_HCHO_{radius_str}'
+                    hcho_nofill_cnt_col = 'TEMPO_NoFill_HCHO_Cnt'
+                    no2_fill_col = f'TEMPO_Fill_NO2_{radius_str}'
+                    no2_fill_cnt_col = 'TEMPO_Fill_NO2_Cnt'
+                    hcho_fill_col = f'TEMPO_Fill_HCHO_{radius_str}'
+                    hcho_fill_cnt_col = 'TEMPO_Fill_HCHO_Cnt'
+                else:
+                    label = str(n_cells)
+                    no2_nofill_col = f'NO2_NoFill_{label}_Avg'
+                    no2_nofill_cnt_col = f'NO2_NoFill_{label}_Cnt'
+                    hcho_nofill_col = f'HCHO_NoFill_{label}_Avg'
+                    hcho_nofill_cnt_col = f'HCHO_NoFill_{label}_Cnt'
+                    no2_fill_col = f'NO2_Fill_{label}_Avg'
+                    no2_fill_cnt_col = f'NO2_Fill_{label}_Cnt'
+                    hcho_fill_col = f'HCHO_Fill_{label}_Avg'
+                    hcho_fill_cnt_col = f'HCHO_Fill_{label}_Cnt'
+                
+                # NoFill
+                if no2_cols:
+                    no2_vals = grp[no2_cols].values.flatten()
+                    no2_valid = no2_vals[~np.isnan(no2_vals)]
+                    # Also filter out fill values
+                    no2_valid = no2_valid[(no2_valid > -900) & (no2_valid < 1e20)]
+                    row[no2_nofill_col] = np.mean(no2_valid) if len(no2_valid) > 0 else MISSING_VALUE
+                    row[no2_nofill_cnt_col] = len(no2_valid)
+                
+                if hcho_cols:
+                    hcho_vals = grp[hcho_cols].values.flatten()
+                    hcho_valid = hcho_vals[~np.isnan(hcho_vals)]
+                    hcho_valid = hcho_valid[(hcho_valid > -900) & (hcho_valid < 1e20)]
+                    row[hcho_nofill_col] = np.mean(hcho_valid) if len(hcho_valid) > 0 else MISSING_VALUE
+                    row[hcho_nofill_cnt_col] = len(hcho_valid)
+                
+                # Fill
+                if no2_cols:
+                    no2_vals_f = grp_filled[no2_cols].values.flatten()
+                    no2_valid_f = no2_vals_f[~np.isnan(no2_vals_f)]
+                    no2_valid_f = no2_valid_f[(no2_valid_f > -900) & (no2_valid_f < 1e20)]
+                    row[no2_fill_col] = np.mean(no2_valid_f) if len(no2_valid_f) > 0 else MISSING_VALUE
+                    row[no2_fill_cnt_col] = len(no2_valid_f)
+                
+                if hcho_cols:
+                    hcho_vals_f = grp_filled[hcho_cols].values.flatten()
+                    hcho_valid_f = hcho_vals_f[~np.isnan(hcho_vals_f)]
+                    hcho_valid_f = hcho_valid_f[(hcho_valid_f > -900) & (hcho_valid_f < 1e20)]
+                    row[hcho_fill_col] = np.mean(hcho_valid_f) if len(hcho_valid_f) > 0 else MISSING_VALUE
+                    row[hcho_fill_cnt_col] = len(hcho_valid_f)
                 
                 all_rows.append(row)
         

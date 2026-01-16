@@ -391,114 +391,25 @@ class WorkspacePage(ft.Container):
             border=ft.border.all(1, Colors.BORDER),
         )
 
-        # === EXPORT SECTION ===
-        self._export_format = ft.RadioGroup(
-            content=ft.Column([
-                ft.Radio(value="hourly", label="Hourly (per site)", label_style=ft.TextStyle(color=Colors.ON_SURFACE)),
-                ft.Radio(value="daily", label="Daily (needs dates)", label_style=ft.TextStyle(color=Colors.ON_SURFACE)),
-                ft.Radio(value="spatial_average", label="Spatial Avg", label_style=ft.TextStyle(color=Colors.ON_SURFACE)),
-            ], spacing=0),
-            value="hourly",
-        )
-
-        # Hour range controls
-        hour_options = [ft.DropdownOption(key=str(h), text=f"{h:02d}") for h in range(24)]
-        
-        self._start_hour_field = ft.TextField(
-            label="Start",
-            value="10",
-            width=70,
-            dense=True,
-            border_color=Colors.BORDER,
-            bgcolor=Colors.SURFACE_VARIANT,
-            color=Colors.ON_SURFACE,
-            text_size=14,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            text_style=ft.TextStyle(color=Colors.ON_SURFACE),
-        )
-        
-        self._end_hour_field = ft.TextField(
-            label="End",
-            value="18",
-            width=70,
-            dense=True,
-            border_color=Colors.BORDER,
-            bgcolor=Colors.SURFACE_VARIANT,
-            color=Colors.ON_SURFACE,
-            text_size=14,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            text_style=ft.TextStyle(color=Colors.ON_SURFACE),
-        )
-
-        self._num_points_field = ft.TextField(
-            label="Grid",
-            value="4",
-            width=70,
-            dense=True,
-            border_color=Colors.BORDER,
-            bgcolor=Colors.SURFACE_VARIANT,
-            color=Colors.ON_SURFACE,
-            text_size=14,
-            keyboard_type=ft.KeyboardType.NUMBER,
-            text_style=ft.TextStyle(color=Colors.ON_SURFACE),
-        )
-
-        self._utc_offset_field = ft.TextField(
-            label="UTC",
-            value="-6.0",
-            width=70,
-            dense=True,
-            text_align=ft.TextAlign.CENTER,
-            border_color=Colors.BORDER,
-            bgcolor=Colors.SURFACE_VARIANT,
-            text_style=ft.TextStyle(color=Colors.ON_SURFACE),
-            label_style=ft.TextStyle(color=Colors.ON_SURFACE_VARIANT),
-        )
-
-        self._export_btn = ft.FilledButton(
+        # === EXPORT BUTTON ===
+        self._export_nav_btn = ft.FilledButton(
             content=ft.Row([
                 ft.Icon(ft.Icons.FILE_DOWNLOAD, size=18),
-                ft.Text("Export", color=Colors.ON_PRIMARY),
+                ft.Text("Export Data...", color=Colors.ON_PRIMARY),
             ], spacing=6, tight=True),
-            on_click=self._on_export_click,
-        )
-
-        export_header = ft.Row([
-            ft.Icon(ft.Icons.FILE_DOWNLOAD, size=18, color=Colors.PRIMARY),
-            ft.Text("Export", size=14, weight=ft.FontWeight.W_600, color=Colors.ON_SURFACE),
-        ])
-
-        export_section = ft.Container(
-            content=ft.Column([
-                export_header,
-                ft.Divider(height=1, color=Colors.BORDER),
-                ft.Text("Format", size=12, color=Colors.ON_SURFACE_VARIANT),
-                self._export_format,
-                ft.Divider(height=1, color=Colors.BORDER),
-                ft.Text("Hour Range (UTC)", size=12, color=Colors.ON_SURFACE_VARIANT),
-                ft.Row([
-                    self._start_hour_field,
-                    ft.Text("to", size=12, color=Colors.ON_SURFACE),
-                    self._end_hour_field,
-                ], spacing=4),
-                ft.Divider(height=1, color=Colors.BORDER),
-                ft.Row([
-                    self._num_points_field,
-                    self._utc_offset_field,
-                ], spacing=8),
-                ft.Container(height=8),
-                ft.Row([self._export_btn], alignment=ft.MainAxisAlignment.CENTER),
-            ], spacing=6),
-            padding=Spacing.SM,
-            bgcolor=Colors.SURFACE,
-            border_radius=8,
-            border=ft.border.all(1, Colors.BORDER),
+            on_click=self._on_export_nav_click,
+            style=ft.ButtonStyle(
+                padding=ft.padding.all(20),
+            )
         )
 
         return ft.Column([
             sites_section,
-            ft.Container(height=8),
-            export_section,
+            ft.Container(height=16),
+            ft.Container(
+                content=self._export_nav_btn,
+                alignment=ft.Alignment(0, 0)
+            )
         ], expand=True)
 
     def _update_sites_list(self):
@@ -640,83 +551,15 @@ class WorkspacePage(ft.Container):
             self._progress_bar.visible = False
             self.update()
 
-    def _on_export_click(self, e):
-        """Export data to Excel."""
+    async def _on_export_nav_click(self, e):
+        """Navigate to export page with current dataset."""
         if not self._dataset:
-            self._status_log.add_error("No dataset loaded")
+            self._status_log.add_warning("Select a dataset first to export.")
             return
-        self.page.run_task(self._export_async)
-
-    async def _export_async(self):
-        """Export data asynchronously."""
-        import logging
-        start_hour = int(self._start_hour_field.value)
-        end_hour = int(self._end_hour_field.value)
-        self._status_log.add_info(f"Starting export (hours {start_hour}-{end_hour})...")
-
-        try:
-            # Find processed file
-            if self._dataset.file_path and Path(self._dataset.file_path).exists():
-                processed_path = Path(self._dataset.file_path)
-            else:
-                safe_name = "".join(c if c.isalnum() or c in "._- " else "_" for c in self._dataset.name)
-                processed_path = self.data_dir / "datasets" / safe_name / f"{safe_name}_processed.nc"
-
-            logging.info(f"Export: Looking for file {processed_path}")
-            self._status_log.add_info(f"File: {processed_path}")
-
-            if not processed_path.exists():
-                self._status_log.add_error("Processed data not found")
-                return
-
-            ds = await asyncio.to_thread(xr.open_dataset, processed_path)
-
-            export_format = self._export_format.value
-            num_points = int(self._num_points_field.value)
-            utc_offset = float(self._utc_offset_field.value)
-
-            # Get sites from database
-            sites = {s.code: s.to_tuple() for s in self._sites}
             
-            logging.info(f"Export: format={export_format}, num_points={num_points}, utc_offset={utc_offset}")
-            logging.info(f"Export: sites={list(sites.keys())}")
-            self._status_log.add_info(f"Format: {export_format}, Grid: {num_points} cells")
-            self._status_log.add_info(f"Sites: {', '.join(sites.keys()) if sites else 'None'}")
-
-            metadata = {
-                'dataset_name': self._dataset.name,
-                'max_cloud': self._dataset.max_cloud,
-                'max_sza': self._dataset.max_sza,
-                'start_hour': start_hour,
-                'end_hour': end_hour,
-            }
-
-            generated_files = await asyncio.to_thread(
-                self.exporter.export_dataset,
-                dataset=ds,
-                dataset_name=self._dataset.name,
-                export_format=export_format,
-                num_points=num_points,
-                distance_km=None,
-                utc_offset=utc_offset,
-                metadata=metadata,
-                sites=sites,
-            )
-
-            ds.close()
-            
-            logging.info(f"Export: generated_files={generated_files}")
-
-            if generated_files:
-                self._status_log.add_success(f"Export complete! {len(generated_files)} file(s) created")
-                for fpath in generated_files[:3]:  # Show first 3
-                    self._status_log.add_info(f"  → {Path(fpath).name}")
-            else:
-                self._status_log.add_warning("No files generated. Check if sites exist.")
-
-        except Exception as ex:
-            import traceback
-            self._status_log.add_error(f"Export failed: {ex}")
-            logging.error(f"Export error: {ex}")
-            traceback.print_exc()
+        if self.page:
+            shell = self.page.controls[0]
+            if shell and hasattr(shell, 'navigate_to'):
+                 # Pass dataset_id in route
+                shell.navigate_to(f"/export/{self._dataset.id}")
 
