@@ -36,7 +36,7 @@ It provides an intuitive interface for researchers and data scientists to downlo
 
 1.  **Clone the repository:**
     ```bash
-    git clone https://github.com/your-username/tempo-analyzer.git
+    git clone https://github.com/pi3123/tempo-analyzer.git
     cd tempo-analyzer
     ```
 
