@@ -53,6 +53,7 @@ It provides an intuitive interface for researchers and data scientists to downlo
 
 3.  **Install dependencies:**
     ```bash
+    cd src
     pip install -r requirements.txt
     ```
 
