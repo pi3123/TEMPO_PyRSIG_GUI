@@ -64,6 +64,7 @@ It provides an intuitive interface for researchers and data scientists to downlo
 To start the application, run the main module from the root directory:
 
 ```bash
+cd src
 python -m tempo_app.main
 ```
 
