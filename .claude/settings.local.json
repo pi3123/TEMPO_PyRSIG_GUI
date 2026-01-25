@@ -8,7 +8,9 @@
       "Bash(pip show:*)",
       "Bash(tree:*)",
       "WebSearch",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "WebFetch(domain:docs.flet.dev)",
+      "WebFetch(domain:github.com)"
     ]
   }
 }

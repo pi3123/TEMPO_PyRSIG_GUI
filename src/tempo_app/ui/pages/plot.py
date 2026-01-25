@@ -28,17 +28,11 @@ class PlotPage(ft.Container):
 
         self._current_dataset = None
         self._current_hour = 12
-        self._current_plot_path = None
-
-        # File picker for downloads
-        self._file_picker = ft.FilePicker(on_result=self._on_file_picker_result)
 
         self._build()
 
     def did_mount(self):
         """Called when control is added to page - load data async."""
-        self.page.overlay.append(self._file_picker)
-        self.page.update()
         self.page.run_task(self._load_datasets_async)
 
     async def _load_datasets_async(self):
@@ -117,16 +111,6 @@ class PlotPage(ft.Container):
                 ft.Text("Generate Map"),
             ], spacing=8, tight=True),
             on_click=self._on_generate_click,
-        )
-
-        # Download button
-        self._download_btn = ft.OutlinedButton(
-            content=ft.Row([
-                ft.Icon(ft.Icons.DOWNLOAD, size=20),
-                ft.Text("Download Plot"),
-            ], spacing=8, tight=True),
-            on_click=self._on_download_click,
-            visible=False,
         )
         
         # Customization controls
@@ -233,7 +217,6 @@ class PlotPage(ft.Container):
             self._variable_dropdown,
             self._road_dropdown,
             self._generate_btn,
-            self._download_btn,
         ], spacing=16, wrap=True)
         
         
@@ -449,14 +432,11 @@ class PlotPage(ft.Container):
             self._progress_bar.visible = False
             
             if result:
-                self._current_plot_path = result
                 self._map_image.src = result
                 self._map_image.visible = True
                 self._placeholder.visible = False
-                self._download_btn.visible = True
                 self._map_image.update()
                 self._placeholder.update()
-                self._download_btn.update()
                 self._show_message(f"✅ Generated {variable} map for {hour:02d}:00 UTC", is_success=True)
             else:
                 hours_str = ", ".join(f"{h:02d}:00" for h in available_hours) if available_hours else "None found"
@@ -498,29 +478,3 @@ class PlotPage(ft.Container):
         self.page.dialog = dlg
         dlg.open = True
         self.page.update()
-
-    def _on_download_click(self, e):
-        """Handle download button click."""
-        if not self._current_plot_path:
-            return
-
-        # Get suggested filename from the current plot path
-        suggested_name = Path(self._current_plot_path).name
-
-        # Open file picker to save
-        self._file_picker.save_file(
-            file_name=suggested_name,
-            allowed_extensions=["png"],
-            file_type=ft.FilePickerFileType.CUSTOM,
-        )
-
-    def _on_file_picker_result(self, e: ft.FilePickerResultEvent):
-        """Handle file picker result."""
-        if e.path and self._current_plot_path:
-            try:
-                import shutil
-                # Copy the file to the selected location
-                shutil.copy2(self._current_plot_path, e.path)
-                self._show_message(f"✅ Plot saved to {e.path}", is_success=True)
-            except Exception as ex:
-                self._show_message(f"❌ Error saving file: {ex}", is_error=True)

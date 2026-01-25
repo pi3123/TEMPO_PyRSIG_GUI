@@ -33,10 +33,6 @@ class WorkspacePage(ft.Container):
         self._dataset: Optional[Dataset] = None
         self._sites: list[Site] = []
         self._current_hour = 12
-        self._current_plot_path = None
-
-        # File picker for downloads
-        self._file_picker = ft.FilePicker(on_result=self._on_file_picker_result)
 
         self._build()
 
@@ -44,8 +40,6 @@ class WorkspacePage(ft.Container):
         """Called when control is added to page - load data async."""
         import logging
         logging.info(f"WorkspacePage.did_mount called, dataset_id={self.dataset_id}")
-        self.page.overlay.append(self._file_picker)
-        self.page.update()
         self.page.run_task(self._load_datasets_async)
 
     async def _load_datasets_async(self):
@@ -289,16 +283,6 @@ class WorkspacePage(ft.Container):
             on_click=self._on_generate_click,
         )
 
-        # Download button
-        self._download_btn = ft.OutlinedButton(
-            content=ft.Row([
-                ft.Icon(ft.Icons.DOWNLOAD, size=18),
-                ft.Text("Download"),
-            ], spacing=6, tight=True),
-            on_click=self._on_download_click,
-            visible=False,
-        )
-
         # Map image display
         self._map_image = ft.Image(
             src="",
@@ -329,7 +313,6 @@ class WorkspacePage(ft.Container):
             self._show_sites_checkbox,
             ft.Container(expand=True),
             self._generate_btn,
-            self._download_btn,
         ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8)
 
         # Hour row
@@ -554,11 +537,9 @@ class WorkspacePage(ft.Container):
 
             if plot_path:
                 if Path(plot_path).exists():
-                    self._current_plot_path = plot_path
                     self._map_image.src = plot_path
                     self._map_image.visible = True
                     self._map_placeholder.visible = False
-                    self._download_btn.visible = True
                     logging.info(f"Map generated: {variable} at {hour}:00 UTC")
                     logging.info(f"Map image set to: {plot_path}")
                 else:
@@ -586,46 +567,4 @@ class WorkspacePage(ft.Container):
             if shell and hasattr(shell, 'navigate_to'):
                  # Pass dataset_id in route
                 shell.navigate_to(f"/export/{self._dataset.id}")
-
-    def _on_download_click(self, e):
-        """Handle download button click."""
-        if not self._current_plot_path:
-            return
-
-        # Get suggested filename from the current plot path
-        suggested_name = Path(self._current_plot_path).name
-
-        # Open file picker to save
-        self._file_picker.save_file(
-            file_name=suggested_name,
-            allowed_extensions=["png"],
-            file_type=ft.FilePickerFileType.CUSTOM,
-        )
-
-    def _on_file_picker_result(self, e: ft.FilePickerResultEvent):
-        """Handle file picker result."""
-        import logging
-        if e.path and self._current_plot_path:
-            try:
-                import shutil
-                # Copy the file to the selected location
-                shutil.copy2(self._current_plot_path, e.path)
-                logging.info(f"Plot saved to {e.path}")
-                # You could add a snackbar here to show success message
-                if self.page and hasattr(self.page, 'snack_bar'):
-                    self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text(f"✅ Plot saved successfully!"),
-                        bgcolor=Colors.PRIMARY_CONTAINER,
-                    )
-                    self.page.snack_bar.open = True
-                    self.page.update()
-            except Exception as ex:
-                logging.error(f"Error saving file: {ex}")
-                if self.page and hasattr(self.page, 'snack_bar'):
-                    self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text(f"❌ Error saving file: {ex}"),
-                        bgcolor=Colors.ERROR_CONTAINER,
-                    )
-                    self.page.snack_bar.open = True
-                    self.page.update()
 
