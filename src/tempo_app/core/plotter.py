@@ -140,15 +140,50 @@ class MapPlotter:
                 return None, messages
             logger.debug(f"Extracted hour {hour} slice.")
             
-            # Dynamic variable handling - check if variable exists in dataset
-            if variable not in ds_hour:
+            # Dynamic variable handling - resolve variable name/alias
+            resolved_variable = variable
+            if resolved_variable not in ds_hour:
+                # Common aliases / legacy names
+                alias_map = {
+                    "NO2": "NO2_TropVCD",
+                    "HCHO": "HCHO_TotVCD",
+                    "O3": "O3_TotVCD",
+                    "HCHO_TropVCD": "HCHO_TotVCD",
+                    "NO2_TROPVCD": "NO2_TropVCD",
+                    "HCHO_TOTVCD": "HCHO_TotVCD",
+                    "O3_TOTVCD": "O3_TotVCD",
+                    "F": "HCHO_TotVCD",
+                }
+                candidate = alias_map.get(str(resolved_variable))
+                if candidate and candidate in ds_hour:
+                    logger.info(f"Resolved variable alias: {resolved_variable} -> {candidate}")
+                    resolved_variable = candidate
+                else:
+                    # Try fuzzy match by prefix (NO2/HCHO/O3)
+                    upper_var = str(resolved_variable).upper()
+                    prefix_map = {
+                        "NO2": "NO2",
+                        "HCHO": "HCHO",
+                        "O3": "O3",
+                    }
+                    for key, prefix in prefix_map.items():
+                        if upper_var.startswith(key):
+                            for var_name in ds_hour.data_vars.keys():
+                                if str(var_name).upper().startswith(prefix):
+                                    logger.info(f"Resolved variable prefix: {resolved_variable} -> {var_name}")
+                                    resolved_variable = var_name
+                                    break
+                        if resolved_variable in ds_hour:
+                            break
+
+            if resolved_variable not in ds_hour:
                 msg = f"❌ Variable '{variable}' not found in dataset. Available: {list(ds_hour.data_vars.keys())}"
                 logger.error(msg)
                 messages.append(msg)
                 return None, messages
 
             # Extract data
-            data = ds_hour[variable]
+            data = ds_hour[resolved_variable]
 
             # Mask fill values (typically -9.999e36)
             data = data.where(data > -1e30)
@@ -160,7 +195,7 @@ class MapPlotter:
 
                 # Find matching variable in registry by output_var name
                 for v in VariableRegistry.discover_variables():
-                    if v.output_var == variable:
+                    if v.output_var == resolved_variable:
                         var_meta = v
                         break
 
@@ -172,7 +207,7 @@ class MapPlotter:
                     default_cmap = var_meta.colormap
                 else:
                     # Fallback for variables not in registry (like FNR)
-                    label = variable
+                    label = resolved_variable
                     default_cmap = 'viridis'
 
             except Exception as e:
@@ -181,7 +216,7 @@ class MapPlotter:
                 default_cmap = 'viridis'
 
             # Special handling for FNR variable - apply defaults independent of colormap
-            if variable == 'FNR':
+            if resolved_variable == 'FNR':
                 label = 'FNR (HCHO/NO2)'
                 # Filter positive values only
                 data = data.where(data > 0)
@@ -196,7 +231,7 @@ class MapPlotter:
                 cmap = colormap
             else:
                 # Use variable-specific default colormap
-                if variable == 'FNR':
+                if resolved_variable == 'FNR':
                     # Blue-Grey-Red colormap for FNR
                     colors = [(0.3, 0.5, 1), 'silver', (1, 0.4, 0.4)]
                     cmap = LinearSegmentedColormap.from_list('bgr', colors, N=256)

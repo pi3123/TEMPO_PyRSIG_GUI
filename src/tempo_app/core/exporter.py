@@ -193,6 +193,33 @@ class DataExporter:
         else:
             return None, None
 
+    def _get_cloud_fraction_suffix(self, dataset: xr.Dataset) -> Optional[str]:
+        """Determine the column suffix used for cloud fraction values."""
+        # Prefer standardized output variable name
+        if 'CloudFrac' in dataset.data_vars:
+            return 'CloudFrac'
+
+        # Fallback: find any variable that looks like cloud fraction
+        for var_name in dataset.data_vars:
+            name_lower = var_name.lower()
+            if 'cloud' in name_lower and 'frac' in name_lower:
+                return var_name.split('_')[0] if '_' in var_name else var_name
+        return None
+
+    def _compute_cloud_fraction_avg(self, df: pd.DataFrame, suffix: Optional[str]) -> Optional[float]:
+        """Compute average cloud fraction from a DataFrame of cell values."""
+        if not suffix:
+            return None
+        cloud_cols = [c for c in df.columns if c.endswith(f'_{suffix}')]
+        if not cloud_cols:
+            return None
+        vals = df[cloud_cols].to_numpy().astype(float).flatten()
+        vals = vals[np.isfinite(vals)]
+        vals = vals[(vals >= 0.0) & (vals <= 1.0)]
+        if len(vals) == 0:
+            return None
+        return float(np.mean(vals))
+
     def _export_hourly(self, dataset: xr.Dataset, dataset_name: str,
                        utc_offset: float, num_points: int = 9,
                        distance_km: Optional[float] = None,
@@ -230,6 +257,7 @@ class DataExporter:
             local_col = [f"{h:02d}:00 Local" for h in local_hours]
 
         generated_files = []
+        cloud_suffix = self._get_cloud_fraction_suffix(dataset)
 
         for site, (t_lat, t_lon) in valid_sites.items():
             # Find cells
@@ -315,7 +343,13 @@ class DataExporter:
                 df_grid.to_excel(writer, sheet_name='Grid_Info', index=False)
                 if metadata:
                     # Add site-specific stats to metadata
-                    meta_df = self._create_metadata_df(metadata)
+                    metadata_local = dict(metadata)
+                    cloud_avg = self._compute_cloud_fraction_avg(df, cloud_suffix)
+                    if cloud_avg is not None:
+                        metadata_local['Cloud fraction (avg)'] = f"{cloud_avg:.4f}"
+                    metadata_local['Hours used to get daily values'] = "08, 09, 10, 11, 12, 13, 14 (local)"
+
+                    meta_df = self._create_metadata_df(metadata_local)
                     # Calculate missing data stats for this site
                     total_pts = len(df)
 
@@ -385,6 +419,8 @@ class DataExporter:
             return []
 
         all_rows = []
+        cloud_suffix = self._get_cloud_fraction_suffix(dataset)
+        cloud_values = []
 
         for site, (t_lat, t_lon) in valid_sites.items():
             # Find cells
@@ -428,6 +464,15 @@ class DataExporter:
             
             if df_filtered.empty:
                 continue
+
+            if cloud_suffix:
+                cloud_cols = [c for c in df_filtered.columns if c.endswith(f'_{cloud_suffix}')]
+                if cloud_cols:
+                    vals = df_filtered[cloud_cols].to_numpy().astype(float).flatten()
+                    vals = vals[np.isfinite(vals)]
+                    vals = vals[(vals >= 0.0) & (vals <= 1.0)]
+                    if len(vals) > 0:
+                        cloud_values.extend(vals.tolist())
             
             # Get all cell data columns
             value_cols = [c for c in df_filtered.columns if c.startswith('Cell')]
@@ -513,7 +558,12 @@ class DataExporter:
         with pd.ExcelWriter(fname, engine='openpyxl') as writer:
             df_final.to_excel(writer, sheet_name='Daily_Data', index=False)
             if metadata:
-                meta_df = self._create_metadata_df(metadata)
+                metadata_local = dict(metadata)
+                if cloud_values:
+                    cloud_avg = float(np.mean(cloud_values))
+                    metadata_local['Cloud fraction (avg)'] = f"{cloud_avg:.4f}"
+
+                meta_df = self._create_metadata_df(metadata_local)
                 
                 # Calculate stats for daily data
                 stats_data = []
