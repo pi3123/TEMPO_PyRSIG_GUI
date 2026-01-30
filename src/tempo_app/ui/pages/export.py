@@ -533,7 +533,8 @@ class ExportPage(ft.Container):
                 "dataset_id": self._dataset.id,
                 "exported_by": "Tempo Analyzer",
                 "spatial_mode": mode,
-                "spatial_value": val
+                "spatial_value": val,
+                "Max SZA": self._dataset.max_sza,
             }
 
             files = await asyncio.to_thread(
