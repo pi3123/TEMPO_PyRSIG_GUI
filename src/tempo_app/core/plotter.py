@@ -47,7 +47,9 @@ class MapPlotter:
                     border_width: float = 1.5,
                     road_scale: float = 1.0,
                     vmin: float = None,
-                    vmax: float = None) -> tuple[Optional[str], list[str]]:
+                    vmax: float = None,
+                    selected_date: Optional[str] = None,
+                    hour_mode: str = "single") -> tuple[Optional[str], list[str]]:
         """
         Generate a map plot for a specific hour and variable.
 
@@ -67,6 +69,8 @@ class MapPlotter:
             road_scale: Scale factor for road widths (default 1.0)
             vmin: Minimum value for color scale
             vmax: Maximum value for color scale
+            selected_date: Optional YYYY-MM-DD date string to filter data
+            hour_mode: "single" for one hour or "all" for daily average
 
         Returns:
             Tuple of (path to PNG file or None, list of warning/error messages)
@@ -93,46 +97,90 @@ class MapPlotter:
                 timestamps = pd.to_datetime(dataset.TIME.values)
                 date_range_str = f"{timestamps.min().strftime('%Y-%m-%d')} to {timestamps.max().strftime('%Y-%m-%d')}"
                 available_hours = sorted(set(timestamps.hour.tolist()))
-                
-                # New format: TIME is datetime, need to extract by hour and average
-                if hour not in dataset.TIME.dt.hour.values:
-                    msg = f"❌ Hour {hour} not found in dataset TIME"
-                    logger.error(msg)
-                    messages.append(msg)
-                    return None, messages
-                ds_hour = dataset.sel(TIME=dataset.TIME.dt.hour == hour).mean(dim='TIME')
+
+                if selected_date:
+                    target_date = pd.to_datetime(selected_date).date()
+                    date_mask = timestamps.date == target_date
+                    if not date_mask.any():
+                        msg = f"❌ Date {selected_date} not found in dataset TIME"
+                        logger.error(msg)
+                        messages.append(msg)
+                        return None, messages
+                    ds_date = dataset.sel(TIME=date_mask)
+                    date_range_str = str(target_date)
+                else:
+                    ds_date = dataset
+
+                if hour_mode == "all":
+                    ds_hour = ds_date.mean(dim='TIME')
+                else:
+                    if hour not in ds_date.TIME.dt.hour.values:
+                        msg = f"❌ Hour {hour} not found in dataset TIME"
+                        logger.error(msg)
+                        messages.append(msg)
+                        return None, messages
+                    ds_hour = ds_date.sel(TIME=ds_date.TIME.dt.hour == hour).mean(dim='TIME')
             elif 'TSTEP' in dataset.dims:
                 timestamps = pd.to_datetime(dataset.TSTEP.values)
                 date_range_str = f"{timestamps.min().strftime('%Y-%m-%d')} to {timestamps.max().strftime('%Y-%m-%d')}"
                 available_hours = sorted(set(timestamps.hour.tolist()))
-                
-                # Old format: TSTEP is datetime, need to extract by hour
-                if hour not in dataset.TSTEP.dt.hour.values:
-                    msg = f"❌ Hour {hour} not found in dataset TSTEP"
-                    logger.error(msg)
-                    messages.append(msg)
-                    return None, messages
-                ds_hour = dataset.sel(TSTEP=dataset.TSTEP.dt.hour == hour).mean(dim='TSTEP')
+
+                if selected_date:
+                    target_date = pd.to_datetime(selected_date).date()
+                    date_mask = timestamps.date == target_date
+                    if not date_mask.any():
+                        msg = f"❌ Date {selected_date} not found in dataset TSTEP"
+                        logger.error(msg)
+                        messages.append(msg)
+                        return None, messages
+                    ds_date = dataset.sel(TSTEP=date_mask)
+                    date_range_str = str(target_date)
+                else:
+                    ds_date = dataset
+
+                if hour_mode == "all":
+                    ds_hour = ds_date.mean(dim='TSTEP')
+                else:
+                    if hour not in ds_date.TSTEP.dt.hour.values:
+                        msg = f"❌ Hour {hour} not found in dataset TSTEP"
+                        logger.error(msg)
+                        messages.append(msg)
+                        return None, messages
+                    ds_hour = ds_date.sel(TSTEP=ds_date.TSTEP.dt.hour == hour).mean(dim='TSTEP')
             elif 'HOUR' in dataset.dims:
                 available_hours = sorted(dataset.HOUR.values.tolist())
-                
-                # Aggregated format: dimension is integer hours
-                if hour not in dataset.HOUR.values:
-                    msg = f"❌ Hour {hour} not found in dataset HOURs"
-                    logger.error(msg)
+                if selected_date:
+                    msg = "⚠️ Date filtering is not available for hourly-aggregated datasets."
+                    logger.warning(msg)
                     messages.append(msg)
-                    return None, messages
-                ds_hour = dataset.sel(HOUR=hour)
+
+                if hour_mode == "all":
+                    ds_hour = dataset.mean(dim='HOUR')
+                else:
+                    # Aggregated format: dimension is integer hours
+                    if hour not in dataset.HOUR.values:
+                        msg = f"❌ Hour {hour} not found in dataset HOURs"
+                        logger.error(msg)
+                        messages.append(msg)
+                        return None, messages
+                    ds_hour = dataset.sel(HOUR=hour)
             elif 'hour' in dataset.dims:
                 available_hours = sorted(dataset.hour.values.tolist())
-                
-                # Legacy format: dimension is integer hours
-                if hour not in dataset.hour.values:
-                    msg = f"❌ Hour {hour} not found in dataset hours"
-                    logger.error(msg)
+                if selected_date:
+                    msg = "⚠️ Date filtering is not available for hourly-aggregated datasets."
+                    logger.warning(msg)
                     messages.append(msg)
-                    return None, messages
-                ds_hour = dataset.sel(hour=hour)
+
+                if hour_mode == "all":
+                    ds_hour = dataset.mean(dim='hour')
+                else:
+                    # Legacy format: dimension is integer hours
+                    if hour not in dataset.hour.values:
+                        msg = f"❌ Hour {hour} not found in dataset hours"
+                        logger.error(msg)
+                        messages.append(msg)
+                        return None, messages
+                    ds_hour = dataset.sel(hour=hour)
             else:
                 msg = f"❌ Dataset has no recognized time dimension. Dims: {list(dataset.dims)}"
                 logger.error(msg)
@@ -314,17 +362,21 @@ class MapPlotter:
             title_parts = [f"{variable} - {dataset_name}"]
             if date_range_str:
                 title_parts.append(date_range_str)
-            
-            # Add current hour line
-            title_parts.append(f"{hour:02d}:00 UTC")
-            
+
+            # Add current hour line or daily average
+            if hour_mode == "all":
+                title_parts.append("Daily Avg (All hours)")
+            else:
+                title_parts.append(f"{hour:02d}:00 UTC")
+
             ax.set_title("\n".join(title_parts), fontsize=title_size)
             
             # Save to temp file with descriptive name + unique timestamp
             import time
             safe_dataset_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in dataset_name)
             timestamp = int(time.time() * 1000)
-            temp_filename = f"{safe_dataset_name}_{variable}_H{hour:02d}_{road_detail}_{timestamp}.png"
+            hour_label = "ALL" if hour_mode == "all" else f"H{hour:02d}"
+            temp_filename = f"{safe_dataset_name}_{variable}_{hour_label}_{road_detail}_{timestamp}.png"
             temp_path = self.cache_dir / temp_filename
             plt.savefig(temp_path, dpi=100, bbox_inches='tight')
             plt.close(fig)
