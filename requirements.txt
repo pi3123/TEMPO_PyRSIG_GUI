@@ -1,0 +1,32 @@
+# TEMPO Analyzer - Dependencies
+# Install with: pip install -r requirements.txt
+
+# UI Framework - Flutter for Python
+flet>=0.21.0
+
+# Data Processing
+numpy>=1.24.0
+pandas>=2.0.0
+xarray>=2023.1.0
+netcdf4>=1.6.0
+
+# NASA RSIG API
+pyrsig>=0.8.0
+
+# Plotting & Mapping
+matplotlib>=3.7.0
+cartopy>=0.22.0
+pyproj>=3.6.0
+pillow>=10.0.0
+
+# Excel Export & Import
+xlsxwriter>=3.1.0
+openpyxl>=3.1.0
+
+# HTTP & Async File Handling
+requests>=2.31.0
+aiohttp>=3.9.0
+aiofiles>=23.2.0
+
+# AI Chart Generation
+google-generativeai>=0.8.0
