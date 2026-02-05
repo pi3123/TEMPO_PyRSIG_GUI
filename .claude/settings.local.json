@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(cd:*)",
+      "Bash(python:*)",
+      "WebFetch(domain:flet.dev)",
+      "Bash(pip show:*)",
+      "Bash(tree:*)",
+      "WebSearch",
+      "Bash(ls:*)",
+      "WebFetch(domain:docs.flet.dev)",
+      "WebFetch(domain:github.com)"
+    ]
+  }
+}
