@@ -86,6 +86,16 @@ cd src
 python -m tempo_app.main
 ```
 
+### Understanding the Interface
+
+The application has three main ways to work with data:
+
+*   **Library**: Browse and manage your downloaded datasets. This is where you view, analyze, and export data you've already downloaded. Think of it as your data archive.
+*   **New Dataset**: Download a single dataset for a specific region and date range. Use this when you want to grab data for one area/time period.
+*   **Batch Import**: Bulk create multiple datasets from a CSV or Excel file containing multiple sites/regions and date ranges. Use this when you need to download data for many locations at once.
+
+**Workflow tip**: Start with **New Dataset** for quick single downloads, or **Batch Import** for bulk operations. Once downloaded, your data appears in the **Library** where you can analyze and export it.
+
 ### Workflow
 
 1.  **Create a Dataset**:

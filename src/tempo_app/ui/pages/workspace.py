@@ -33,6 +33,9 @@ class WorkspacePage(ft.Container):
         self._dataset: Optional[Dataset] = None
         self._sites: list[Site] = []
         self._current_hour = 12
+        self._hour_mode = "single"
+        self._selected_date = None
+        self._available_dates = []
 
         self._build()
 
@@ -115,17 +118,20 @@ class WorkspacePage(ft.Container):
             self._populate_variable_dropdown(ds)
             
             available_hours = []
+            available_dates = []
             num_timesteps = 0
             
             # Check for TIME (new format) or TSTEP (old format) datetime dimensions
             if 'TIME' in ds.dims:
                 timestamps = pd.to_datetime(ds.TIME.values)
                 available_hours = sorted(set(timestamps.hour.tolist()))
+                available_dates = sorted({ts.date() for ts in timestamps})
                 num_timesteps = len(timestamps)
                 logging.info(f"Dataset has {num_timesteps} timesteps ({timestamps[0].date()} to {timestamps[-1].date()})")
             elif 'TSTEP' in ds.dims:
                 timestamps = pd.to_datetime(ds.TSTEP.values)
                 available_hours = sorted(set(timestamps.hour.tolist()))
+                available_dates = sorted({ts.date() for ts in timestamps})
                 num_timesteps = len(timestamps)
                 logging.info(f"Dataset has {num_timesteps} timesteps ({timestamps[0].date()} to {timestamps[-1].date()})")
             # Fallback to HOUR dimension (old aggregated format)
@@ -136,6 +142,21 @@ class WorkspacePage(ft.Container):
             
             ds.close()
             
+            if available_dates:
+                self._available_dates = available_dates
+                self._date_dropdown.options = [
+                    ft.DropdownOption(key=str(d), text=str(d)) for d in available_dates
+                ]
+                self._date_dropdown.value = str(available_dates[0])
+                self._selected_date = self._date_dropdown.value
+                self._date_dropdown.disabled = False
+            else:
+                self._available_dates = []
+                self._date_dropdown.options = []
+                self._date_dropdown.value = None
+                self._selected_date = None
+                self._date_dropdown.disabled = True
+
             if available_hours:
                 self._available_hours = available_hours
                 min_hour = int(min(available_hours))
@@ -152,6 +173,13 @@ class WorkspacePage(ft.Container):
                 hours_str = ", ".join(f"{h}" for h in available_hours)
                 logging.info(f"Available hours: {hours_str}")
                 logging.info(f"Set hour slider: min={min_hour}, max={max_hour}")
+
+                # Respect current hour mode
+                if self._hour_mode == "all":
+                    self._hour_slider.disabled = True
+                    self._hour_text.value = "All hours (daily avg)"
+                else:
+                    self._hour_slider.disabled = False
         except Exception as e:
             import logging
             logging.error(f"Failed to load available hours: {e}")
@@ -364,6 +392,31 @@ class WorkspacePage(ft.Container):
             on_change=self._on_show_sites_change,
         )
 
+        # Date selector
+        self._date_dropdown = ft.Dropdown(
+            label="Date",
+            value=None,
+            options=[],
+            width=140,
+            border_color=Colors.BORDER,
+            bgcolor=Colors.SURFACE_VARIANT,
+            dense=True,
+            text_style=ft.TextStyle(color=Colors.ON_SURFACE),
+            label_style=ft.TextStyle(color=Colors.ON_SURFACE_VARIANT),
+            disabled=True,
+            on_change=self._on_date_change,
+        )
+
+        # Hour mode selector
+        self._hour_mode_group = ft.RadioGroup(
+            value="single",
+            content=ft.Row([
+                ft.Radio(value="single", label="Single hour"),
+                ft.Radio(value="all", label="All hours (daily avg)"),
+            ], spacing=12),
+            on_change=self._on_hour_mode_change,
+        )
+
         # Hour slider
         self._hour_slider = ft.Slider(
             min=0, max=23, divisions=23, value=12,
@@ -439,6 +492,12 @@ class WorkspacePage(ft.Container):
             self._generate_btn,
         ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=8)
 
+        # Date + mode row
+        date_mode_row = ft.Row([
+            self._date_dropdown,
+            self._hour_mode_group,
+        ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=12)
+
         # Hour row
         hour_row = ft.Row([
             self._hour_text,
@@ -464,6 +523,8 @@ class WorkspacePage(ft.Container):
             controls_row_1,
             ft.Container(height=4),
             controls_row_2,
+            ft.Container(height=4),
+            date_mode_row,
             ft.Container(height=4),
             hour_row,
             self._progress_bar,
@@ -623,6 +684,22 @@ class WorkspacePage(ft.Container):
         self._hour_text.value = f"Hour: {hour} UTC"
         self.update()
 
+    def _on_date_change(self, e):
+        """Handle date selection change."""
+        self._selected_date = e.control.value
+        self.update()
+
+    def _on_hour_mode_change(self, e):
+        """Handle hour mode change (single vs all hours)."""
+        self._hour_mode = e.control.value
+        is_all = self._hour_mode == "all"
+        self._hour_slider.disabled = is_all
+        if is_all:
+            self._hour_text.value = "All hours (daily avg)"
+        else:
+            self._hour_text.value = f"Hour: {self._current_hour} UTC"
+        self.update()
+
     def _on_auto_scale_change(self, e):
         """Handle auto scale checkbox change - enable/disable min/max fields."""
         auto_enabled = self._auto_scale_checkbox.value
@@ -681,6 +758,8 @@ class WorkspacePage(ft.Container):
             variable = self._variable_dropdown.value
             road_detail = self._road_dropdown.value
             hour = self._current_hour
+            hour_mode = self._hour_mode
+            selected_date = self._selected_date
 
             # Get colormap settings
             colormap_value = self._colormap_dropdown.value
@@ -698,7 +777,9 @@ class WorkspacePage(ft.Container):
                 except ValueError:
                     logging.warning("Invalid min/max values, using auto scale")
 
-            logging.info(f"Calling plotter.generate_map(variable={variable}, hour={hour}, colormap={colormap}, vmin={vmin}, vmax={vmax})")
+            logging.info(
+                f"Calling plotter.generate_map(variable={variable}, hour={hour}, mode={hour_mode}, date={selected_date}, colormap={colormap}, vmin={vmin}, vmax={vmax})"
+            )
 
             # Generate map - now returns (result, messages)
             plot_path, messages = await asyncio.to_thread(
@@ -713,6 +794,8 @@ class WorkspacePage(ft.Container):
                 colormap=colormap,
                 vmin=vmin,
                 vmax=vmax,
+                selected_date=selected_date,
+                hour_mode=hour_mode,
             )
 
             ds.close()
@@ -737,25 +820,28 @@ class WorkspacePage(ft.Container):
                     # Display messages in UI and logs
                     if messages:
                         warnings_text = "\n".join(messages)
+                        time_label = "All hours (daily avg)" if hour_mode == "all" else f"{hour:02d}:00 UTC"
                         self._show_status_message(
-                            f"✅ Map generated for {hour:02d}:00 UTC\n{warnings_text}",
+                            f"✅ Map generated for {time_label}\n{warnings_text}",
                             is_warning=True
                         )
-                        logging.info(f"Map generated: {variable} at {hour}:00 UTC (with warnings: {'; '.join(messages)})")
+                        logging.info(f"Map generated: {variable} at {time_label} (with warnings: {'; '.join(messages)})")
                     else:
                         self._hide_status_message()
-                        logging.info(f"Map generated: {variable} at {hour}:00 UTC")
+                        time_label = "All hours (daily avg)" if hour_mode == "all" else f"{hour:02d}:00 UTC"
+                        logging.info(f"Map generated: {variable} at {time_label}")
                     logging.info(f"Map image set to: {plot_path}")
                 else:
                     logging.error(f"Plot path doesn't exist: {plot_path}")
                     self._show_status_message(f"❌ Error: Plot file not found", is_error=True)
             else:
-                error_msg = f"No map returned for hour {hour}"
+                time_label = "all hours" if hour_mode == "all" else f"hour {hour}"
+                error_msg = f"No map returned for {time_label}"
                 if messages:
                     error_msg = "\n".join(messages)
                     self._show_status_message(error_msg, is_error=True)
                 else:
-                    self._show_status_message(f"❌ No map returned for hour {hour}", is_error=True)
+                    self._show_status_message(f"❌ No map returned for {time_label}", is_error=True)
                 logging.error(error_msg)
 
         except Exception as ex:
