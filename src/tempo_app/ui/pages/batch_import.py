@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 import asyncio
 import uuid
+import logging
 
 from ..theme import Colors, Spacing
 from ..components.widgets import (
@@ -30,6 +31,7 @@ from ...core.batch_parser import parse_import_file, ParseResult, ParsedSite
 from ...core.batch_scheduler import BatchScheduler
 from ...core.geo_utils import bbox_from_center
 
+logger = logging.getLogger(__name__)
 
 HELP_TEXTS = {
     "file_import": (
@@ -723,7 +725,7 @@ class BatchImportPage(ft.Container):
         # Create batch sites
         batch_sites = []
         for i, parsed_site in enumerate(self._parse_result.valid_sites):
-            radius = default_radius
+            radius = parsed_site.custom_radius_km if parsed_site.custom_radius_km else default_radius
             bbox = bbox_from_center(parsed_site.latitude, parsed_site.longitude, radius)
 
             batch_site = BatchSite(
@@ -738,13 +740,21 @@ class BatchImportPage(ft.Container):
                 bbox_north=bbox.north,
                 custom_date_start=date.fromisoformat(parsed_site.custom_date_start) if parsed_site.custom_date_start else None,
                 custom_date_end=date.fromisoformat(parsed_site.custom_date_end) if parsed_site.custom_date_end else None,
+                custom_hour_start=parsed_site.custom_hour_start,
+                custom_hour_end=parsed_site.custom_hour_end,
                 custom_max_cloud=parsed_site.custom_max_cloud,
                 custom_max_sza=parsed_site.custom_max_sza,
                 sequence_number=i,
+                status=BatchSiteStatus.PENDING,
             )
             batch_sites.append(batch_site)
 
         self.db.create_batch_sites(batch_sites)
+        
+        # Debug logging
+        logger.info(f"Created batch job {job.id} with {len(batch_sites)} sites")
+        for site in batch_sites:
+            logger.debug(f"  Site: {site.site_name}, status={site.status}, batch_job_id={site.batch_job_id}")
 
         # Update UI
         self._is_processing = True
@@ -822,17 +832,23 @@ class BatchImportPage(ft.Container):
             return
 
         # Build resumable jobs UI
-        job_buttons = []
+        job_controls = []
         for job in resumable[:5]:  # Show up to 5
             progress_pct = int(job.progress * 100)
-            btn = ft.OutlinedButton(
+            resume_btn = ft.OutlinedButton(
                 content=ft.Row([
                     ft.Icon(ft.Icons.PLAY_ARROW, size=16),
                     ft.Text(f"{job.name} ({progress_pct}%)", size=13),
                 ], spacing=4, tight=True),
                 on_click=lambda e, j=job: asyncio.create_task(self._resume_job(j.id)),
             )
-            job_buttons.append(btn)
+            delete_btn = ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE,
+                icon_size=18,
+                tooltip="Delete this job",
+                on_click=lambda e, j=job: asyncio.create_task(self._delete_resumable_job(j.id)),
+            )
+            job_controls.append(ft.Row([resume_btn, delete_btn], spacing=4))
 
         self._resumable_jobs_container.content.controls = [
             ft.Row([
@@ -840,11 +856,11 @@ class BatchImportPage(ft.Container):
                 ft.Text("Resumable Jobs", size=14, weight=ft.FontWeight.W_600, color=Colors.ON_SURFACE),
             ], spacing=8),
             ft.Text(
-                "These jobs were interrupted and can be resumed:",
+                "These jobs were interrupted and can be resumed or deleted:",
                 size=13,
                 color=Colors.ON_SURFACE_VARIANT,
             ),
-            ft.Row(job_buttons, spacing=8, wrap=True),
+            ft.Column(job_controls, spacing=8),
         ]
 
         self._resumable_jobs_container.visible = True
@@ -893,3 +909,19 @@ class BatchImportPage(ft.Container):
             self._cancel_btn.visible = False
             self._check_resumable_jobs()
             self.update()
+    async def _delete_resumable_job(self, job_id: str):
+        """Delete a resumable job and its sites."""
+        job = self.db.get_batch_job(job_id)
+        if not job:
+            self._status_log.add_error("Job not found")
+            return
+
+        try:
+            # Delete job and all associated data
+            self.db.delete_batch_job_full(job_id)
+            self._status_log.add_info(f"Deleted job: {job.name}")
+            # Refresh the resumable jobs list
+            self._check_resumable_jobs()
+        except Exception as e:
+            self._status_log.add_error(f"Failed to delete job: {e}")
+            logger.error(f"Error deleting job {job_id}: {e}")

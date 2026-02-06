@@ -364,6 +364,14 @@ class BatchSite:
     # Ordering for resume
     sequence_number: int = 0
 
+    # Per-site overrides (optional)
+    custom_date_start: Optional[date] = None
+    custom_date_end: Optional[date] = None
+    custom_hour_start: Optional[int] = None  # Start hour (0-23)
+    custom_hour_end: Optional[int] = None  # End hour (0-23)
+    custom_max_cloud: Optional[float] = None
+    custom_max_sza: Optional[float] = None
+
     @property
     def bbox(self) -> "BoundingBox":
         """Return computed bbox as BoundingBox object."""

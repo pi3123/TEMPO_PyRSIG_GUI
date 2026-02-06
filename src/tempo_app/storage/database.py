@@ -185,10 +185,17 @@ class Database:
                     site_name TEXT NOT NULL,
                     latitude REAL NOT NULL,
                     longitude REAL NOT NULL,
+                    radius_km REAL DEFAULT 10.0,
                     bbox_west REAL NOT NULL,
                     bbox_south REAL NOT NULL,
                     bbox_east REAL NOT NULL,
                     bbox_north REAL NOT NULL,
+                    custom_date_start DATE,
+                    custom_date_end DATE,
+                    custom_hour_start INTEGER,
+                    custom_hour_end INTEGER,
+                    custom_max_cloud REAL,
+                    custom_max_sza REAL,
                     status TEXT NOT NULL DEFAULT 'pending',
                     dataset_id TEXT REFERENCES datasets(id),
                     error_message TEXT,
@@ -258,6 +265,42 @@ class Database:
 
         if "o3_mean" not in granule_columns:
             conn.execute("ALTER TABLE granules ADD COLUMN o3_mean REAL")
+
+        # Check if batch_sites table exists and add missing columns
+        try:
+            cursor = conn.execute("PRAGMA table_info(batch_sites)")
+            batch_site_columns = [row[1] for row in cursor.fetchall()]
+
+            if "radius_km" not in batch_site_columns:
+                conn.execute("ALTER TABLE batch_sites ADD COLUMN radius_km REAL DEFAULT 10.0")
+                logger.info("Added radius_km column to batch_sites table")
+
+            if "custom_date_start" not in batch_site_columns:
+                conn.execute("ALTER TABLE batch_sites ADD COLUMN custom_date_start DATE")
+                logger.info("Added custom_date_start column to batch_sites table")
+
+            if "custom_date_end" not in batch_site_columns:
+                conn.execute("ALTER TABLE batch_sites ADD COLUMN custom_date_end DATE")
+                logger.info("Added custom_date_end column to batch_sites table")
+
+            if "custom_hour_start" not in batch_site_columns:
+                conn.execute("ALTER TABLE batch_sites ADD COLUMN custom_hour_start INTEGER")
+                logger.info("Added custom_hour_start column to batch_sites table")
+
+            if "custom_hour_end" not in batch_site_columns:
+                conn.execute("ALTER TABLE batch_sites ADD COLUMN custom_hour_end INTEGER")
+                logger.info("Added custom_hour_end column to batch_sites table")
+
+            if "custom_max_cloud" not in batch_site_columns:
+                conn.execute("ALTER TABLE batch_sites ADD COLUMN custom_max_cloud REAL")
+                logger.info("Added custom_max_cloud column to batch_sites table")
+
+            if "custom_max_sza" not in batch_site_columns:
+                conn.execute("ALTER TABLE batch_sites ADD COLUMN custom_max_sza REAL")
+                logger.info("Added custom_max_sza column to batch_sites table")
+        except sqlite3.OperationalError:
+            # batch_sites table doesn't exist yet (new database)
+            pass
 
     # ==========================================================================
     # Dataset Operations
@@ -736,16 +779,17 @@ class Database:
                 INSERT INTO batch_jobs (
                     id, name, created_at, status, source_file,
                     total_sites, completed_sites, failed_sites,
-                    default_radius_km, date_start, date_end, day_filter, hour_filter,
-                    max_cloud, max_sza, batch_size, last_processed_at, error_message
+                    default_radius_km, date_start, date_end,
+                    day_filter, hour_filter, max_cloud, max_sza, batch_size,
+                    last_processed_at, error_message
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 job.id, job.name, job.created_at, job.status.value, job.source_file,
                 job.total_sites, job.completed_sites, job.failed_sites,
                 job.default_radius_km, job.date_start, job.date_end,
                 json.dumps(job.day_filter), json.dumps(job.hour_filter),
-                job.max_cloud, job.max_sza, job.batch_size, job.last_processed_at,
-                job.error_message
+                job.max_cloud, job.max_sza, job.batch_size,
+                job.last_processed_at, job.error_message
             ))
         return job
 
@@ -766,10 +810,10 @@ class Database:
             return [self._row_to_batch_job(row) for row in rows]
 
     def get_resumable_batch_jobs(self) -> list[BatchJob]:
-        """Get batch jobs that can be resumed (PAUSED or ERROR status)."""
+        """Get batch jobs that can be resumed (PAUSED or ERROR status, not COMPLETED)."""
         with self._get_connection() as conn:
             rows = conn.execute(
-                "SELECT * FROM batch_jobs WHERE status IN ('paused', 'error', 'running') ORDER BY created_at DESC"
+                "SELECT * FROM batch_jobs WHERE status IN ('paused', 'error') ORDER BY created_at DESC"
             ).fetchall()
             return [self._row_to_batch_job(row) for row in rows]
 
@@ -888,14 +932,15 @@ class Database:
                 INSERT INTO batch_sites (
                     batch_job_id, site_name, latitude, longitude, radius_km,
                     bbox_west, bbox_south, bbox_east, bbox_north,
+                    custom_date_start, custom_date_end, custom_hour_start, custom_hour_end, custom_max_cloud, custom_max_sza,
                     status, dataset_id, error_message, started_at, completed_at, sequence_number
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [
                 (
                     s.batch_job_id, s.site_name, s.latitude, s.longitude, s.radius_km,
                     s.bbox_west, s.bbox_south, s.bbox_east, s.bbox_north,
-                    s.status.value, s.dataset_id, s.error_message, s.started_at, s.completed_at,
-                    s.sequence_number
+                    s.custom_date_start, s.custom_date_end, s.custom_hour_start, s.custom_hour_end, s.custom_max_cloud, s.custom_max_sza,
+                    s.status.value, s.dataset_id, s.error_message, s.started_at, s.completed_at, s.sequence_number
                 )
                 for s in sites
             ])
@@ -959,6 +1004,12 @@ class Database:
             bbox_south=row["bbox_south"],
             bbox_east=row["bbox_east"],
             bbox_north=row["bbox_north"],
+            custom_date_start=_parse_date(row["custom_date_start"]) if row["custom_date_start"] else None,
+            custom_date_end=_parse_date(row["custom_date_end"]) if row["custom_date_end"] else None,
+            custom_hour_start=row["custom_hour_start"],
+            custom_hour_end=row["custom_hour_end"],
+            custom_max_cloud=row["custom_max_cloud"],
+            custom_max_sza=row["custom_max_sza"],
             status=BatchSiteStatus(row["status"]),
             dataset_id=row["dataset_id"],
             error_message=row["error_message"],

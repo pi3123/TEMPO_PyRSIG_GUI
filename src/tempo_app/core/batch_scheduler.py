@@ -134,8 +134,15 @@ class BatchScheduler:
 
         # Get pending sites
         pending_sites = self.db.get_pending_batch_sites(job.id)
+        
+        # Debug: also get all sites for this job
+        all_sites = self.db.get_batch_sites(job.id)
+        logger.info(f"Job {job.id}: {len(all_sites)} total sites, {len(pending_sites)} pending sites")
+        for site in all_sites:
+            logger.debug(f"  Site {site.site_name}: status={site.status}")
 
         if not pending_sites:
+            logger.warning(f"No pending sites found for job {job.name} (total: {len(all_sites)})")
             job.status = BatchJobStatus.COMPLETED
             self.db.update_batch_job(job)
             if self.on_job_complete:
@@ -155,17 +162,26 @@ class BatchScheduler:
 
         # Process sites in parallel batches
         tasks = [process_site_with_semaphore(site) for site in pending_sites]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Log any exceptions from task execution
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"Task {i} raised exception: {result}")
+                import traceback
+                traceback.print_exception(type(result), result, result.__traceback__)
 
         # Update final job status
         job = self.db.get_batch_job(job.id)  # Refresh from DB
+        logger.info(f"Job {job.name} final counts: completed={job.completed_sites}, failed={job.failed_sites}, total={job.total_sites}")
 
         if self._cancel_requested:
             job.status = BatchJobStatus.ERROR
             job.error_message = "Cancelled by user"
         elif self._paused:
             job.status = BatchJobStatus.PAUSED
-        elif job.completed_sites + job.failed_sites >= job.total_sites:
+        else:
+            # Processing completed (sites finished or no more pending)
             job.status = BatchJobStatus.COMPLETED
 
         job.last_processed_at = datetime.now()
@@ -186,13 +202,34 @@ class BatchScheduler:
         if self.on_progress:
             self.on_progress(job, site, f"Starting {site.site_name}")
 
-        try:
-            # Determine settings (use per-site overrides or job defaults)
-            date_start = site.custom_date_start or job.date_start
-            date_end = site.custom_date_end or job.date_end
-            max_cloud = site.custom_max_cloud if site.custom_max_cloud is not None else job.max_cloud
-            max_sza = site.custom_max_sza if site.custom_max_sza is not None else job.max_sza
+        # Determine settings (use per-site overrides or job defaults)
+        date_start = site.custom_date_start or job.date_start
+        date_end = site.custom_date_end or job.date_end
+        max_cloud = site.custom_max_cloud if site.custom_max_cloud is not None else job.max_cloud
+        max_sza = site.custom_max_sza if site.custom_max_sza is not None else job.max_sza
+        
+        # Determine hour filter (use per-site overrides or job defaults)
+        if site.custom_hour_start is not None and site.custom_hour_end is not None:
+            hour_filter = list(range(site.custom_hour_start, site.custom_hour_end + 1))
+        else:
+            hour_filter = job.hour_filter
 
+        # Log detailed settings
+        logger.info(f"Site {site.site_name}: radius={site.radius_km}km, "
+                   f"dates={date_start} to {date_end}, "
+                   f"hours={hour_filter[0]}-{hour_filter[-1] if hour_filter else 'none'}, "
+                   f"max_cloud={max_cloud}, "
+                   f"max_sza={max_sza}")
+        
+        # Send settings to UI activity log
+        if self.on_progress:
+            settings_msg = (f"Site {site.site_name}: radius={site.radius_km}km, "
+                          f"dates={date_start} to {date_end}, "
+                          f"hours={hour_filter[0]}-{hour_filter[-1] if hour_filter else 'none'}, "
+                          f"max_cloud={max_cloud}, max_sza={max_sza}")
+            self.on_progress(job, site, settings_msg)
+
+        try:
             # Create dataset for this site
             safe_name = _sanitize_filename(f"{job.name}_{site.site_name}")
             dataset = Dataset(
@@ -203,7 +240,7 @@ class BatchScheduler:
                 date_start=date_start,
                 date_end=date_end,
                 day_filter=job.day_filter,
-                hour_filter=job.hour_filter,
+                hour_filter=hour_filter,
                 max_cloud=max_cloud,
                 max_sza=max_sza,
                 status=DatasetStatus.DOWNLOADING,
@@ -218,7 +255,7 @@ class BatchScheduler:
 
             # Generate granule list
             granules = self._generate_granules(
-                dataset, date_start, date_end, job.day_filter, job.hour_filter
+                dataset, date_start, date_end, job.day_filter, hour_filter
             )
             self.db.create_granules_batch(granules)
             dataset.granule_count = len(granules)
@@ -229,7 +266,9 @@ class BatchScheduler:
             hours_list = sorted(set(g.hour for g in granules))
 
             if self.on_progress:
-                self.on_progress(job, site, f"Downloading {site.site_name} ({len(granules)} granules)")
+                settings_info = (f"Cloud: {max_cloud:.2f}, SZA: {max_sza:.1f}°, "
+                                  f"Dates: {date_start} to {date_end}")
+                self.on_progress(job, site, f"Downloading {site.site_name} ({len(granules)} granules) - {settings_info}")
 
             # Download
             downloader = RSIGDownloader(dataset_dir, max_concurrent=4, api_key=self.api_key)
