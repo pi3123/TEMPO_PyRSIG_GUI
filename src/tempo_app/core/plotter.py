@@ -180,28 +180,65 @@ class MapPlotter:
                 label = variable
                 default_cmap = 'viridis'
 
-            # Special handling for FNR variable - apply defaults independent of colormap
-            if variable == 'FNR':
-                label = 'FNR (HCHO/NO2)'
-                # Filter positive values only
+            # Special handling for known variables - apply sensible defaults
+            VARIABLE_DEFAULTS = {
+                'FNR': {
+                    'label': 'FNR (HCHO/NO₂)',
+                    'vmin': 2, 'vmax': 8,
+                    'filter_positive': True,
+                },
+                'NO2_TropVCD': {
+                    'label': 'NO₂ Tropospheric VCD (molecules/cm²)',
+                    'vmin': 0, 'vmax': 1e16,
+                    'filter_positive': True,
+                },
+                'HCHO_TotVCD': {
+                    'label': 'HCHO Total VCD (molecules/cm²)',
+                    'vmin': 0, 'vmax': 2e16,
+                    'filter_positive': True,
+                },
+                'O3_TotVCD': {
+                    'label': 'O₃ Total Column (DU)',
+                    'vmin': 200, 'vmax': 500,
+                    'filter_positive': True,
+                },
+                'NO2_StratVCD': {
+                    'label': 'NO₂ Stratospheric VCD (molecules/cm²)',
+                    'vmin': 0, 'vmax': 5e15,
+                    'filter_positive': True,
+                },
+                'NO2_TotalVCD': {
+                    'label': 'NO₂ Total VCD (molecules/cm²)',
+                    'vmin': 0, 'vmax': 1.5e16,
+                    'filter_positive': True,
+                },
+            }
+
+            var_defaults = VARIABLE_DEFAULTS.get(variable, {})
+            if var_defaults.get('label'):
+                label = var_defaults['label']
+            if var_defaults.get('filter_positive'):
                 data = data.where(data > 0)
-                # Default FNR range (only if not explicitly set by user)
-                if vmin is None:
-                    vmin = 2
-                if vmax is None:
-                    vmax = 8
+            if vmin is None and 'vmin' in var_defaults:
+                vmin = var_defaults['vmin']
+            if vmax is None and 'vmax' in var_defaults:
+                vmax = var_defaults['vmax']
 
             # Apply colormap override if specified, otherwise use default
             if colormap:
                 cmap = colormap
             else:
                 # Use variable-specific default colormap
-                if variable == 'FNR':
-                    # Blue-Grey-Red colormap for FNR
-                    colors = [(0.3, 0.5, 1), 'silver', (1, 0.4, 0.4)]
-                    cmap = LinearSegmentedColormap.from_list('bgr', colors, N=256)
-                else:
-                    cmap = default_cmap
+                VARIABLE_COLORMAPS = {
+                    'FNR': LinearSegmentedColormap.from_list(
+                        'bgr', [(0.3, 0.5, 1), 'silver', (1, 0.4, 0.4)], N=256),
+                    'NO2_TropVCD': 'RdYlBu_r',
+                    'NO2_StratVCD': 'RdYlBu_r',
+                    'NO2_TotalVCD': 'RdYlBu_r',
+                    'HCHO_TotVCD': 'YlOrRd',
+                    'O3_TotVCD': 'PuBu',
+                }
+                cmap = VARIABLE_COLORMAPS.get(variable, default_cmap)
 
             # Setup normalization
             norm = Normalize(vmin=vmin, vmax=vmax) if (vmin is not None or vmax is not None) else None
