@@ -32,6 +32,12 @@ class DataProcessor:
                 try:
                     ds = xr.open_dataset(p)
                     
+                    # Validate: skip files with duplicate dimension names (corrupt HDF5)
+                    for var_name in ds.data_vars:
+                        dims = ds[var_name].dims
+                        if len(dims) != len(set(dims)):
+                            raise ValueError(f"Duplicate dimensions {dims} in variable '{var_name}'")
+                    
                     # Drop existing TSTEP variable if it exists (conflicts with dimension)
                     if 'TSTEP' in ds.variables:
                         ds = ds.drop_vars('TSTEP')
@@ -52,7 +58,13 @@ class DataProcessor:
                     
                     datasets.append(ds)
                 except Exception as e:
-                    logger.warning(f"Failed to open {p}: {e}")
+                    logger.warning(f"Skipping corrupt file {p.name}: {e}")
+                    # Delete corrupt file so it can be re-downloaded
+                    try:
+                        p.unlink()
+                        logger.info(f"Deleted corrupt file: {p.name}")
+                    except Exception:
+                        pass
             
             if not datasets:
                 return None
