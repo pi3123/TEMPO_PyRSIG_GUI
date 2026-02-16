@@ -169,28 +169,49 @@ class WorkspacePage(ft.Container):
         # Get metadata from registry for better display names
         registry_vars = {v.output_var: v for v in VariableRegistry.discover_variables()}
 
-        # Build dropdown options
+        # Build dropdown options with preferred ordering
+        # Show individual species first, then derived variables
+        DISPLAY_NAMES = {
+            'NO2_TropVCD': 'NO₂ Tropospheric VCD',
+            'HCHO_TotVCD': 'HCHO Total VCD',
+            'O3_TotVCD': 'O₃ Total Column',
+            'NO2_StratVCD': 'NO₂ Stratospheric VCD',
+            'NO2_TotalVCD': 'NO₂ Total VCD',
+            'FNR': 'FNR (HCHO/NO₂ Ratio)',
+            'CloudFrac': 'Cloud Fraction',
+            'CloudPres': 'Cloud Pressure',
+        }
+        # Preferred order: individual species first, then derived
+        PREFERRED_ORDER = [
+            'NO2_TropVCD', 'HCHO_TotVCD', 'O3_TotVCD',
+            'NO2_StratVCD', 'NO2_TotalVCD',
+            'FNR',
+            'CloudFrac', 'CloudPres',
+        ]
+
         options = []
         default_value = None
 
-        for var_name in sorted(available_vars):
-            # Get display name from registry if available
-            if var_name in registry_vars:
+        # Sort: preferred order first, then remaining alphabetically
+        ordered_vars = [v for v in PREFERRED_ORDER if v in available_vars]
+        ordered_vars += sorted(v for v in available_vars if v not in PREFERRED_ORDER)
+
+        for var_name in ordered_vars:
+            # Get display name from hardcoded map, registry, or raw name
+            if var_name in DISPLAY_NAMES:
+                display_name = DISPLAY_NAMES[var_name]
+            elif var_name in registry_vars:
                 var_meta = registry_vars[var_name]
                 display_name = var_meta.display_name
                 if var_meta.unit:
                     display_name += f" ({var_meta.unit})"
             else:
-                # Fallback for variables not in registry (like FNR)
-                if var_name == 'FNR':
-                    display_name = "FNR (HCHO/NO₂ Ratio)"
-                else:
-                    display_name = var_name
+                display_name = var_name
 
             options.append(ft.DropdownOption(key=var_name, text=display_name))
 
-            # Set default to FNR if available, otherwise first variable
-            if var_name == 'FNR' or default_value is None:
+            # Default to first individual species (NO2 or HCHO), fallback to first var
+            if default_value is None:
                 default_value = var_name
 
         # Update dropdown
