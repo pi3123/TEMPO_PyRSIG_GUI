@@ -102,7 +102,7 @@ def parse_import_file(file_path: Path) -> ParseResult:
 
     Expected columns:
         Required: name (or site_name), latitude (or lat), longitude (or lon)
-        Optional: radius_km, date_start, date_end, max_cloud, max_sza
+        Optional: radius_km, date_start, date_end, hour_start, hour_end, max_cloud, max_sza
 
     Args:
         file_path: Path to .xlsx, .xls, or .csv file

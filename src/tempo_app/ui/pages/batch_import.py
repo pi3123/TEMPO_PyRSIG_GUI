@@ -40,9 +40,12 @@ HELP_TEXTS = {
         "- name (or site_name): Unique identifier for each site\n"
         "- latitude (or lat): Site latitude in decimal degrees\n"
         "- longitude (or lon): Site longitude in decimal degrees\n\n"
-        "Optional columns:\n"
-        "- date_start, date_end: Custom date range for this site\n"
-        "- max_cloud, max_sza: Custom quality filters"
+        "Optional columns (override defaults per-site):\n"
+        "- radius_km: Bounding box radius in km (default: 10)\n"
+        "- date_start, date_end: Custom date range (YYYY-MM-DD or M/D/YYYY)\n"
+        "- hour_start, hour_end: Hour range 0-23 UTC\n"
+        "- max_cloud: Max cloud fraction 0-1 (e.g., 0.3 = 30%)\n"
+        "- max_sza: Max solar zenith angle in degrees"
     ),
     "default_radius": (
         "Default radius in kilometers for calculating bounding boxes.\n\n"
