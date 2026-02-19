@@ -53,7 +53,6 @@ It provides an intuitive interface for researchers and data scientists to downlo
 
 3.  **Install dependencies:**
     ```bash
-    cd src
     pip install -r requirements.txt
     ```
 
@@ -69,7 +68,6 @@ cd TEMPO_PyRSIG_GUI
 git pull origin main
 
 # Update dependencies (if requirements.txt changed)
-cd src
 pip install -r requirements.txt --upgrade
 ```
 
